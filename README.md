@@ -78,6 +78,12 @@ sudo journalctl -u galochka-hedra-bot -f
 /admin_voices_sync
 ```
 
+Эта команда импортирует только custom/user-created голоса, если Hedra отдаёт соответствующее описание. Для очистки старых алиасов и библиотечных голосов:
+
+```text
+/admin_voices_cleanup
+```
+
 ## Voice clone
 ```text
 /admin_clone_voice

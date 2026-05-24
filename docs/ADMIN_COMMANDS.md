@@ -7,7 +7,9 @@
 - `/admin_revoke <telegram_id>` - отозвать доступ.
 - `/admin_voices` - список голосов.
 - `/admin_hedra_voices` - показать реальные voice IDs из Hedra.
-- `/admin_voices_sync` - импортировать доступные Hedra voices в локальную базу.
+- `/admin_voices_sync` - импортировать только custom/user-created Hedra voices в локальную базу.
+- `/admin_voices_sync_all` - импортировать все доступные Hedra voices, включая библиотечные.
+- `/admin_voices_cleanup` - отключить не-UUID и библиотечные голоса, сбросить выбор пользователей.
 - `/admin_add_voice <name> <hedra_voice_id>` - добавить существующий голос.
 - `/admin_disable_voice <hedra_voice_id>` - отключить голос.
 - `/admin_enable_voice <hedra_voice_id>` - включить голос.

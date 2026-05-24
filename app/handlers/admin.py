@@ -29,7 +29,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "/admin_users\n/admin_allow <telegram_id>\n/admin_deny <telegram_id>\n/admin_revoke <telegram_id>\n"
-        "/admin_voices\n/admin_hedra_voices\n/admin_voices_sync\n/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
+        "/admin_voices\n/admin_hedra_voices\n/admin_voices_sync\n/admin_voices_sync_all\n/admin_voices_cleanup\n"
+        "/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
         "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_set_video_model <model_id>\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
@@ -92,7 +93,7 @@ async def admin_voices(message: Message, db: Database, settings: Settings) -> No
     if not rows:
         await message.answer("Голоса не добавлены.")
         return
-    await message.answer("\n\n".join(format_voice(dict(row)) for row in rows))
+    await send_long_text(message, "\n\n".join(format_voice(dict(row)) for row in rows))
 
 
 @router.message(Command("admin_add_voice"))
@@ -140,12 +141,59 @@ async def admin_hedra_voices(message: Message, settings: Settings, hedra: HedraC
     for voice in voices[:40]:
         name = extract_voice_name(voice)
         voice_id = extract_voice_id(voice)
-        chunks.append(f"{name}\n{voice_id or 'id не найден'}")
-    await message.answer("Голоса Hedra:\n\n" + "\n\n".join(chunks))
+        description = str(voice.get("description") or "").strip()
+        custom_mark = "custom" if is_custom_voice(voice) else "library"
+        suffix = f"\n{description}" if description else ""
+        chunks.append(f"{name}\n{voice_id or 'id не найден'}\n{custom_mark}{suffix}")
+    await send_long_text(message, "Голоса Hedra:\n\n" + "\n\n".join(chunks))
 
 
 @router.message(Command("admin_voices_sync"))
 async def admin_voices_sync(message: Message, db: Database, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    try:
+        voices = await hedra.list_voices()
+    except Exception as exc:
+        await message.answer(f"Не удалось получить голоса Hedra: {short_error(str(exc))}")
+        return
+    imported = 0
+    skipped = 0
+    skipped_library = 0
+    for voice in voices:
+        if not is_custom_voice(voice):
+            skipped_library += 1
+            continue
+        voice_id = extract_voice_id(voice)
+        if not voice_id or not is_uuid(voice_id):
+            skipped += 1
+            continue
+        name = extract_voice_name(voice)
+        count = await db.fetchone("SELECT COUNT(*) AS c FROM voices")
+        is_default = 1 if count and count["c"] == 0 else 0
+        await db.execute(
+            """
+            INSERT INTO voices (name, hedra_voice_id, source, is_active, is_default, notes, created_at, updated_at)
+            VALUES (?, ?, 'hedra_api_custom', 1, ?, ?, ?, ?)
+            ON CONFLICT(hedra_voice_id) DO UPDATE SET
+              name=excluded.name,
+              source=excluded.source,
+              is_active=1,
+              notes=excluded.notes,
+              updated_at=excluded.updated_at
+            """,
+            (name, voice_id, is_default, voice_note(voice), now_iso(), now_iso()),
+        )
+        imported += 1
+    await message.answer(
+        f"Мои голоса синхронизированы: {imported}.\n"
+        f"Пропущено библиотечных: {skipped_library}.\n"
+        f"Пропущено без UUID: {skipped}."
+    )
+
+
+@router.message(Command("admin_voices_sync_all"))
+async def admin_voices_sync_all(message: Message, db: Database, settings: Settings, hedra: HedraClient) -> None:
     if not await ensure_admin(message, settings):
         return
     try:
@@ -161,22 +209,37 @@ async def admin_voices_sync(message: Message, db: Database, settings: Settings, 
             skipped += 1
             continue
         name = extract_voice_name(voice)
+        source = "hedra_api_custom" if is_custom_voice(voice) else "hedra_api_library"
         count = await db.fetchone("SELECT COUNT(*) AS c FROM voices")
         is_default = 1 if count and count["c"] == 0 else 0
         await db.execute(
             """
-            INSERT INTO voices (name, hedra_voice_id, source, is_active, is_default, created_at, updated_at)
-            VALUES (?, ?, 'hedra_api', 1, ?, ?, ?)
+            INSERT INTO voices (name, hedra_voice_id, source, is_active, is_default, notes, created_at, updated_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(hedra_voice_id) DO UPDATE SET
               name=excluded.name,
               source=excluded.source,
               is_active=1,
+              notes=excluded.notes,
               updated_at=excluded.updated_at
             """,
-            (name, voice_id, is_default, now_iso(), now_iso()),
+            (name, voice_id, source, is_default, voice_note(voice), now_iso(), now_iso()),
         )
         imported += 1
-    await message.answer(f"Голоса синхронизированы: {imported}. Пропущено без UUID: {skipped}.")
+    await message.answer(f"Все голоса Hedra синхронизированы: {imported}. Пропущено без UUID: {skipped}.")
+
+
+@router.message(Command("admin_voices_cleanup"))
+async def admin_voices_cleanup(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    await db.execute("UPDATE voices SET is_active=0, is_default=0, updated_at=? WHERE hedra_voice_id NOT LIKE '%-%'", (now_iso(),))
+    await db.execute(
+        "UPDATE voices SET is_active=0, is_default=0, updated_at=? WHERE source IN ('hedra_api', 'hedra_api_library')",
+        (now_iso(),),
+    )
+    await db.execute("UPDATE users SET selected_voice_id=NULL, selected_voice_name=NULL, updated_at=?", (now_iso(),))
+    await message.answer("Голоса очищены: не-UUID и библиотечные голоса отключены. Выбор пользователей сброшен.")
 
 
 @router.message(Command("admin_disable_voice"))
@@ -455,6 +518,45 @@ def extract_voice_name(voice: dict) -> str:
             return str(value)
     voice_id = extract_voice_id(voice)
     return voice_id or "Без названия"
+
+
+def is_custom_voice(voice: dict) -> bool:
+    text = " ".join(
+        str(voice.get(key) or "")
+        for key in ("description", "source", "provider", "category", "origin", "type")
+    ).lower()
+    name = extract_voice_name(voice).lower()
+    if any(marker in text for marker in ("created by user", "user-created", "user created", "custom", "cloned")):
+        return True
+    if "создан" in text and "пользовател" in text:
+        return True
+    if text.strip() in {"", "voice"} and name not in {"alice", "daniel"}:
+        return False
+    return False
+
+
+def voice_note(voice: dict) -> str:
+    description = str(voice.get("description") or "").strip()
+    provider = str(voice.get("provider") or "").strip()
+    bits = [part for part in (description, provider) if part]
+    return " | ".join(bits)[:500] if bits else ""
+
+
+async def send_long_text(message: Message, text: str, limit: int = 3500) -> None:
+    if len(text) <= limit:
+        await message.answer(text)
+        return
+    current = ""
+    for block in text.split("\n\n"):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) > limit:
+            if current:
+                await message.answer(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        await message.answer(current)
 
 
 def format_user_row(row: dict) -> str:
