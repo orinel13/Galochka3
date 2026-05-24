@@ -4,7 +4,8 @@ import asyncio
 from pathlib import Path
 
 from app.hedra_client import HedraClient, extract_asset_url
-from app.services.model_adapters import HedraGrokImagineI2IAdapter
+from app.jobs import extract_result_asset_id
+from app.services.model_adapters import HedraGrokImagineI2IAdapter, HedraImageEditAdapter
 
 
 def test_extract_asset_url_prefers_uploaded_asset_url() -> None:
@@ -71,6 +72,29 @@ def test_grok_i2i_adapter_uses_current_job_image_url(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_generic_image_edit_falls_back_to_current_file_data_uri(tmp_path: Path) -> None:
+    async def run() -> None:
+        image_path = tmp_path / "source.png"
+        image_path.write_bytes(b"fake-image")
+        client = object.__new__(HedraClient)
+        adapter = HedraImageEditAdapter({}, "Generic I2I")
+        prepared = await adapter.build(
+            hedra_client=client,
+            image_asset_id="asset-a",
+            image_url=None,
+            local_image_path=image_path,
+            model_id="model",
+            text_prompt="edit",
+            aspect_ratio="1:1",
+            resolution="1080p",
+        )
+
+        assert prepared.payload["image_url"].startswith("data:image/png;base64,")
+        assert prepared.input_image_source == "data_uri_current_file"
+
+    asyncio.run(run())
+
+
 def test_two_i2i_payloads_do_not_mix_urls(tmp_path: Path) -> None:
     async def run() -> None:
         image_path = tmp_path / "source.png"
@@ -103,3 +127,14 @@ def test_two_i2i_payloads_do_not_mix_urls(tmp_path: Path) -> None:
         assert "A.png" not in str(payload_b.payload)
 
     asyncio.run(run())
+
+
+def test_result_asset_id_is_extracted_from_batch_results() -> None:
+    status = {
+        "status": "complete",
+        "batch_results": [
+            {"id": "generation-a", "asset_id": "asset-a", "status": "complete"},
+        ],
+    }
+
+    assert extract_result_asset_id(status, "image") == "asset-a"

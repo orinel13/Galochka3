@@ -76,7 +76,7 @@ class HedraImageEditAdapter(BaseModelAdapter):
         image_url: str | None = None,
         batch_size: int = 1,
     ) -> PreparedPayload:
-        reference = await prepare_image_reference_for_edit(image_asset_id, image_url, self.model_raw_json)
+        reference = await prepare_image_reference_for_edit(hedra_client, image_asset_id, image_url, local_image_path, self.model_raw_json)
         payload = {
             "type": "image",
             "text_prompt": text_prompt,
@@ -160,8 +160,10 @@ def get_adapter_for_model(model_raw_json: dict[str, Any] | str | None, generatio
 
 
 async def prepare_image_reference_for_edit(
+    hedra_client: HedraClient,
     image_asset_id: str,
     image_url: str | None,
+    local_image_path: Path,
     model_raw_json: dict[str, Any] | str | None,
 ) -> dict[str, Any]:
     raw = _loads_model(model_raw_json)
@@ -179,10 +181,8 @@ async def prepare_image_reference_for_edit(
         return {"payload": {"type": "image_to_image", "reference_image_ids": [image_asset_id]}, "image_url": None, "source": "asset_id_current_job"}
     if any(marker in raw_text for marker in ("image_id", "image_asset_id")):
         return {"payload": {"image_id": image_asset_id}, "image_url": None, "source": "asset_id_current_job"}
-    raise ModelAdapterError(
-        "Эта image model требует image URL/reference image, но текущий Hedra API не дал совместимый способ "
-        "передать загруженное изображение. Попробуй другую image model."
-    )
+    data_uri = hedra_client.build_data_uri(local_image_path)
+    return {"payload": {"image_url": data_uri}, "image_url": data_uri, "source": "data_uri_current_file"}
 
 
 def _preferred_image_url_field(raw_text: str) -> str:

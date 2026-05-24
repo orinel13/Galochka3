@@ -73,9 +73,13 @@ Image edit включается только если `/models` показыва
 - adapter получает только URL текущей задачи или data URI, построенный из текущего локального файла;
 - бот не использует recent assets из Hedra web UI, не берёт первый asset из `/assets` и не подбирает картинку по имени;
 - если upload response не вернул URL, бот делает exact lookup только по тому же `asset_id`;
-- если модель требует image URL, но URL/data URI недоступны, job завершается ошибкой, чтобы не редактировать чужое изображение.
+- если upload/exact lookup не дали URL, adapter использует data URI текущего локального файла, чтобы не редактировать чужое изображение;
+- если Hedra отклоняет одно URL-поле, бот пробует ограниченный набор URL-полей с тем же самым source image.
 
 Grok Imagine I2I запускается через Hedra API с source image URL текущего upload asset. Бот не подключает xAI API напрямую и не автоматизирует web UI Hedra.
+
+## Image result delivery
+`GET /generations/{generation_id}/status` может вернуть `download_url`/`url` напрямую или только `asset_id`. Для batch responses `asset_id` может находиться в `batch_results[]`. Бот проверяет прямые ссылки, затем `asset_id`, затем exact asset lookup.
 
 ## Почему модель есть в web UI Hedra, но может не работать в API
 Бот работает только через официальный Hedra API:

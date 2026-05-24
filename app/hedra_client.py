@@ -348,11 +348,32 @@ def extract_asset_url(upload_response: dict[str, Any], allow_thumbnail: bool = F
         url = _direct_url(asset, ("url", "download_url", "asset_url", "image_url"))
         if url:
             return url
+        url = _find_url_without_thumbnail(asset)
+        if url:
+            return url
     url = _direct_url(upload_response, ("url", "download_url", "asset_url", "image_url"))
     if url:
         return url
     if allow_thumbnail:
         return _direct_url(upload_response, ("thumbnail_url",))
+    return None
+
+
+def _find_url_without_thumbnail(data: Any) -> str | None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "thumbnail_url":
+                continue
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+            found = _find_url_without_thumbnail(value)
+            if found:
+                return found
+    if isinstance(data, list):
+        for item in data:
+            found = _find_url_without_thumbnail(item)
+            if found:
+                return found
     return None
 
 

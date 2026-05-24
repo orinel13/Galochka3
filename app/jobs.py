@@ -469,7 +469,7 @@ class JobManager:
             try:
                 generation = await self.hedra.generate_image_edit(prepared.payload)
             except HedraApiError as exc:
-                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
+                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url:
                     generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, prepared.input_image_url, dict(model))
                 else:
                     logger.warning(
@@ -734,12 +734,18 @@ def extract_download_url(data: dict[str, Any]) -> str | None:
         value = data.get(key)
         if value:
             return str(value)
-    for key in ("asset", "result", "data", "output", "video", "audio"):
+    for key in ("asset", "result", "data", "output", "video", "audio", "image", "batch_results", "results", "assets", "outputs"):
         nested = data.get(key)
         if isinstance(nested, dict):
             found = extract_download_url(nested)
             if found:
                 return found
+        if isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    found = extract_download_url(item)
+                    if found:
+                        return found
     return None
 
 
@@ -748,12 +754,18 @@ def extract_streaming_url(data: dict[str, Any]) -> str | None:
         value = data.get(key)
         if value:
             return str(value)
-    for key in ("asset", "result", "data", "output", "video", "audio"):
+    for key in ("asset", "result", "data", "output", "video", "audio", "image", "batch_results", "results", "assets", "outputs"):
         nested = data.get(key)
         if isinstance(nested, dict):
             found = extract_streaming_url(nested)
             if found:
                 return found
+        if isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    found = extract_streaming_url(item)
+                    if found:
+                        return found
     return None
 
 
@@ -762,12 +774,18 @@ def extract_audio_asset_id(data: dict[str, Any]) -> str | None:
         value = data.get(key)
         if value:
             return str(value)
-    for key in ("asset", "result", "data", "output", "audio"):
+    for key in ("asset", "result", "data", "output", "audio", "batch_results", "results", "assets", "outputs"):
         nested = data.get(key)
         if isinstance(nested, dict):
             found = extract_audio_asset_id(nested)
             if found:
                 return found
+        if isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    found = extract_audio_asset_id(item)
+                    if found:
+                        return found
     return None
 
 
@@ -785,7 +803,7 @@ def extract_result_asset_id(data: dict[str, Any], asset_type: str | None = None)
         value = data.get(key)
         if value and (key != "id" or _looks_like_asset_container(data, asset_type)):
             return str(value)
-    for key in ("asset", "result", "data", "output", "image", "audio", "video"):
+    for key in ("asset", "result", "data", "output", "image", "audio", "video", "batch_results", "results", "assets", "outputs"):
         nested = data.get(key)
         if isinstance(nested, dict):
             found = extract_result_asset_id(nested, asset_type)

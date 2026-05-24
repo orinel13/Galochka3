@@ -172,7 +172,7 @@ Prompt передаётся в `generated_video_inputs.text_prompt` только
 ## Почему модель есть в web UI Hedra, но может не работать в API
 Бот работает только через официальный Hedra API. Модели синхронизируются через `GET /models`, а payload для каждой модели может отличаться.
 
-`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` требует source image URL/data URI: бот сохраняет URL из upload response в `jobs.input_image_url`, при необходимости делает exact lookup по `asset_id`, а если URL получить нельзя, завершает задачу ошибкой. Если API не возвращает совместимый способ передачи изображения для другой модели, бот не использует browser automation и сообщает ошибку.
+`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` требует source image URL/data URI: бот сохраняет URL из upload response в `jobs.input_image_url`, при необходимости делает exact lookup по `asset_id`, а если URL получить нельзя, использует data URI текущего локального файла. Если Hedra кладёт результат только в `batch_results[].asset_id`, бот делает exact asset lookup и скачивает результат. Browser automation не используется.
 
 ## Web UI модель не видна в API
 Если модель или голос есть в Hedra web UI, но не приходит через public API (`/models`, `/voices`, `/assets`), бот не может использовать её официально. Browser automation Hedra Studio не используется.
