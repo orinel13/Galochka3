@@ -424,7 +424,9 @@ class JobManager:
             try:
                 generation = await self.hedra.generate_image_edit(prepared.payload)
             except HedraApiError as exc:
-                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
+                if _is_missing_image_url_error(str(exc)) and prepared.input_image_asset_id:
+                    generation = await self._retry_i2i_with_reference_ids(job_id, prepared.payload, prepared.input_image_asset_id, dict(model))
+                elif _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
                     generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, prepared.input_image_url, dict(model))
                 else:
                     logger.warning(
@@ -559,6 +561,28 @@ class JobManager:
             await self._update_job(job_id, hedra_error_raw=_error_raw(last_error))
             raise last_error
         raise RuntimeError("Не удалось подобрать payload для Grok Imagine I2I.")
+
+    async def _retry_i2i_with_reference_ids(
+        self,
+        job_id: int,
+        base_payload: dict[str, Any],
+        image_asset_id: str,
+        model: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(base_payload)
+        for key in ("image_url", "image_urls", "images", "reference_image_urls", "source_image_url", "input_image_url", "image_id"):
+            payload.pop(key, None)
+        payload["type"] = "image_to_image"
+        payload["reference_image_ids"] = [image_asset_id]
+        await self._update_job(job_id, adapter_name="hedra_image_to_image_reference_ids", request_payload_keys=json.dumps(list(payload.keys()), ensure_ascii=False))
+        logger.info(
+            "Retry image edit with reference_image_ids model_id=%s model_name=%s keys=%s asset_id=%s",
+            model.get("id"),
+            model.get("name"),
+            list(payload.keys()),
+            image_asset_id,
+        )
+        return await self.hedra.generate_image_edit(payload)
 
     async def _source_audio_path(self, source: dict[str, Any], job_id: int) -> Path:
         local = source.get("local_result_path")

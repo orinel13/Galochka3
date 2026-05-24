@@ -167,12 +167,12 @@ Prompt передаётся в `generated_video_inputs.text_prompt` только
 Открой `🖼 Изображения` -> `Текст → изображение`, проверь image model, нажми `Продолжить` и отправь prompt.
 
 ## Редактирование изображения
-Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Image edit использует отдельный adapter: бот загружает изображение как Hedra asset и пытается передать image URL/reference image/data URI только если выбранная модель/API это поддерживает. Если совместимого способа нет, бот честно вернёт ошибку.
+Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Image edit использует отдельный adapter: бот загружает изображение как Hedra asset и для I2I-моделей передаёт его через `reference_image_ids`.
 
 ## Почему модель есть в web UI Hedra, но может не работать в API
 Бот работает только через официальный Hedra API. Модели синхронизируются через `GET /models`, а payload для каждой модели может отличаться.
 
-`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` может требовать image URL/reference image, а не просто Hedra asset id. Если API не возвращает совместимый способ передачи изображения, бот не использует browser automation и сообщает ошибку.
+`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` использует `type="image_to_image"` и `reference_image_ids` с id загруженного image asset. Если API не возвращает совместимый способ передачи изображения для другой модели, бот не использует browser automation и сообщает ошибку.
 
 ## Web UI модель не видна в API
 Если модель или голос есть в Hedra web UI, но не приходит через public API (`/models`, `/voices`, `/assets`), бот не может использовать её официально. Browser automation Hedra Studio не используется.

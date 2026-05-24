@@ -588,7 +588,7 @@ async def admin_test_model(message: Message, db: Database, settings: Settings) -
         return
     model = dict(row)
     image_payload = ["type", "text_prompt", "ai_model_id", "aspect_ratio", "resolution", "batch_size", "enhance_prompt"]
-    edit_payload = ["type", "text_prompt", "ai_model_id", "aspect_ratio", "resolution", "batch_size"]
+    edit_payload = ["type=image_to_image", "text_prompt", "ai_model_id", "reference_image_ids", "aspect_ratio", "resolution", "batch_size"]
     if model.get("requires_image_url"):
         edit_payload.append("image_urls/image_url")
     elif model.get("supports_image_asset_id"):

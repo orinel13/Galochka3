@@ -96,6 +96,34 @@ class HedraImageEditAdapter(BaseModelAdapter):
 class HedraGrokImagineI2IAdapter(HedraImageEditAdapter):
     name = "hedra_grok_imagine_i2i"
 
+    async def build(
+        self,
+        *,
+        hedra_client: HedraClient,
+        image_asset_id: str,
+        local_image_path: Path,
+        model_id: str,
+        text_prompt: str,
+        aspect_ratio: str,
+        resolution: str,
+        batch_size: int = 1,
+    ) -> PreparedPayload:
+        payload = {
+            "type": "image_to_image",
+            "text_prompt": text_prompt,
+            "ai_model_id": model_id,
+            "reference_image_ids": [image_asset_id],
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "batch_size": batch_size,
+        }
+        return PreparedPayload(
+            self.name,
+            payload,
+            list(payload.keys()),
+            input_image_asset_id=image_asset_id,
+        )
+
 
 class HedraVideoI2VAdapter(BaseModelAdapter):
     name = "hedra_video_i2v"
@@ -128,6 +156,8 @@ async def prepare_image_reference_for_edit(
 ) -> dict[str, Any]:
     raw = _loads_model(model_raw_json)
     raw_text = json.dumps(raw, ensure_ascii=False).lower()
+    if "reference_image_ids" in raw_text:
+        return {"payload": {"type": "image_to_image", "reference_image_ids": [image_asset_id]}, "image_url": None}
     image_url = await hedra_client.try_get_asset_url(image_asset_id)
     if image_url:
         field = _preferred_image_url_field(raw_text)
@@ -138,8 +168,6 @@ async def prepare_image_reference_for_edit(
         if field == "reference_image_urls":
             return {"payload": {"reference_image_urls": [image_url]}, "image_url": image_url}
         return {"payload": {field: image_url}, "image_url": image_url}
-    if "reference_image_ids" in raw_text:
-        return {"payload": {"reference_image_ids": [image_asset_id]}, "image_url": None}
     if any(marker in raw_text for marker in ("image_id", "image_asset_id")):
         return {"payload": {"image_id": image_asset_id}, "image_url": None}
     if "base64" in raw_text or "data uri" in raw_text or "data:" in raw_text:
