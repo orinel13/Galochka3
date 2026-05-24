@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from app.navigation import BACK_LABEL, MENU_LABEL
+
 
 TEXT_TO_AUDIO = "🎙 Текст → аудио"
 TEXT_PHOTO_TO_VIDEO = "Текст + фото → avatar video"
@@ -22,6 +24,7 @@ VIDEO_SECTION = "🎬 Видео"
 IMAGE_SECTION = "🖼 Изображения"
 SETTINGS_SECTION = "⚙️ Настройки"
 BACK = "Назад"
+VIDEO_DURATION = "Длительность видео"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -39,7 +42,7 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 def audio_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=TEXT_TO_AUDIO)], [KeyboardButton(text="История аудио")], [KeyboardButton(text=BACK)]],
+        keyboard=[[KeyboardButton(text=TEXT_TO_AUDIO)], [KeyboardButton(text="История аудио")], nav_row()],
         resize_keyboard=True,
     )
 
@@ -51,7 +54,7 @@ def video_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=GENERATED_AUDIO_TO_VIDEO)],
         [KeyboardButton(text=IMAGE_TO_VIDEO)],
         [KeyboardButton(text="Prompt для видео")],
-        [KeyboardButton(text=BACK)],
+        nav_row(),
     ]
     if is_admin:
         keyboard.insert(4, [KeyboardButton(text="Выбрать video model"), KeyboardButton(text="Выбрать avatar model")])
@@ -66,7 +69,7 @@ def image_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=TEXT_TO_IMAGE)],
         [KeyboardButton(text=IMAGE_EDIT)],
         [KeyboardButton(text="Prompt для изображения")],
-        [KeyboardButton(text=BACK)],
+        nav_row(),
     ]
     if is_admin:
         keyboard.insert(2, [KeyboardButton(text="Выбрать image model")])
@@ -81,7 +84,7 @@ def voice_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=VOICE_SELECT), KeyboardButton(text=VOICE_CURRENT)],
             [KeyboardButton(text=VOICE_LIST)],
-            [KeyboardButton(text=BACK)],
+            nav_row(),
         ],
         resize_keyboard=True,
     )
@@ -92,13 +95,22 @@ def settings_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="Текущие параметры")],
             [KeyboardButton(text="Video aspect ratio"), KeyboardButton(text="Video resolution")],
+            [KeyboardButton(text=VIDEO_DURATION)],
             [KeyboardButton(text="Image aspect ratio"), KeyboardButton(text="Image resolution")],
             [KeyboardButton(text="TTS speed"), KeyboardButton(text="TTS stability")],
             [KeyboardButton(text="Очистить временные результаты")],
-            [KeyboardButton(text=BACK)],
+            nav_row(),
         ],
         resize_keyboard=True,
     )
+
+
+def nav_row() -> list[KeyboardButton]:
+    return [KeyboardButton(text=BACK_LABEL), KeyboardButton(text=MENU_LABEL)]
+
+
+def flow_nav_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[nav_row()], resize_keyboard=True)
 
 
 def access_decision_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
@@ -129,8 +141,16 @@ def choose_voice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎭 Выбрать голос", callback_data="open_setvoice")],
+            inline_nav_row(),
         ]
     )
+
+
+def inline_nav_row() -> list[InlineKeyboardButton]:
+    return [
+        InlineKeyboardButton(text=BACK_LABEL, callback_data="nav_back"),
+        InlineKeyboardButton(text=MENU_LABEL, callback_data="nav_menu"),
+    ]
 
 
 def scenario_keyboard(
@@ -147,27 +167,34 @@ def scenario_keyboard(
         extra.append(InlineKeyboardButton(text="Изменить модель", callback_data=f"scenario_model:{scenario}"))
     if include_prompt:
         extra.append(InlineKeyboardButton(text="Изменить prompt", callback_data=f"scenario_prompt:{scenario}"))
+    if scenario in {"video_from_text", "video_from_uploaded_audio", "video_from_generated_audio", "image_to_video"}:
+        extra.append(InlineKeyboardButton(text="Изменить длительность", callback_data="setting:video_duration_ms"))
+        extra.append(InlineKeyboardButton(text="Изменить качество", callback_data="setting:video_quality"))
     if extra:
         rows.append(extra[:2])
-        if len(extra) > 2:
-            rows.append(extra[2:])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="scenario_back")])
+        for offset in range(2, len(extra), 2):
+            rows.append(extra[offset:offset + 2])
+    rows.append(inline_nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def prompt_choice_keyboard(scenario: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Пропустить", callback_data=f"prompt_skip:{scenario}")],
             [InlineKeyboardButton(text="Написать prompt", callback_data=f"prompt_write:{scenario}")],
             [InlineKeyboardButton(text="Prompt по умолчанию", callback_data=f"prompt_default:{scenario}")],
+            [InlineKeyboardButton(text="Без prompt", callback_data=f"prompt_skip:{scenario}")],
+            inline_nav_row(),
         ]
     )
 
 
 def options_keyboard(kind: str, values: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=value, callback_data=f"option:{kind}:{value}")] for value in values]
+        inline_keyboard=[
+            *[[InlineKeyboardButton(text=value, callback_data=f"option:{kind}:{value}")] for value in values],
+            inline_nav_row(),
+        ]
     )
 
 
@@ -202,4 +229,5 @@ def user_models_keyboard(family: str, models: list[dict[str, str]], selected_id:
         marker = "✅ " if model["id"] == selected_id else ""
         premium = " premium" if model.get("premium") else ""
         rows.append([InlineKeyboardButton(text=f"{marker}{model['name']}{premium}", callback_data=f"user_model:{family}:{index}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет доступных моделей", callback_data="noop")]])
+    rows.append(inline_nav_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет доступных моделей", callback_data="noop")], inline_nav_row()])

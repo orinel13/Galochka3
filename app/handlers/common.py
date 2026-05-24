@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app.config import Settings
 from app.db import Database
 from app.keyboards import access_decision_keyboard, main_menu
+from app.navigation import clear_stack
 from app.ui_messages import send_tracked_message, track_ui_message
 from app.utils import format_user
 
@@ -23,6 +24,7 @@ async def start(message: Message, db: Database, settings: Settings) -> None:
     is_admin = tg.id == settings.admin_telegram_id
     user = await db.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name, is_admin, settings.allow_new_users)
     if user["is_allowed"] or user["is_admin"]:
+        await clear_stack(db, tg.id)
         sent = await message.answer("Доступ активен. Выбери действие.", reply_markup=main_menu())
         track_ui_message(sent.chat.id, sent.message_id)
         return

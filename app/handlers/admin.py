@@ -16,7 +16,13 @@ from app.jobs import JobManager
 from app.keyboards import video_models_keyboard
 from app.services.cleanup_service import CleanupService
 from app.services.credits_service import CreditsService
-from app.services.model_service import ModelService
+from app.services.model_service import (
+    ModelService,
+    is_avatar_compatible,
+    is_image_to_video_compatible,
+    supports_image_edit_model,
+    supports_text_to_image_model,
+)
 from app.services.voice_clone_service import VoiceCloneService
 from app.states import VoiceCloneState
 from app.utils import compact_json, now_iso, short_error
@@ -37,7 +43,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
         "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_models_image\n/admin_models_video\n/admin_models_avatar\n"
         "/admin_set_avatar_model <model_id>\n/admin_set_video_model <model_id>\n/admin_set_image_model <model_id>\n"
-        "/admin_model <model_id>\n"
+        "/admin_model <model_id>\n/admin_test_model <model_id>\n"
         "/admin_set_omnia_model\n/admin_set_character3_model\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
         "/admin_cleanup\n/admin_export_db\n/admin_hedra_test"
@@ -568,6 +574,40 @@ async def admin_model(message: Message, db: Database, settings: Settings) -> Non
     )
 
 
+@router.message(Command("admin_test_model"))
+async def admin_test_model(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    model_id = command_args(message).strip()
+    if not model_id:
+        await message.answer("Формат: /admin_test_model <model_id>")
+        return
+    row = await db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+    if not row:
+        await message.answer("Модель не найдена.")
+        return
+    model = dict(row)
+    image_payload = ["type", "text_prompt", "ai_model_id", "aspect_ratio", "resolution", "batch_size", "enhance_prompt"]
+    edit_payload = ["type", "text_prompt", "ai_model_id", "aspect_ratio", "resolution", "batch_size"]
+    if model.get("requires_image_url"):
+        edit_payload.append("image_urls/image_url")
+    elif model.get("supports_image_asset_id"):
+        edit_payload.append("image_id/reference_image_ids")
+    video_payload = ["type", "ai_model_id", "start_keyframe_id", "generated_video_inputs.aspect_ratio", "generated_video_inputs.resolution", "generated_video_inputs.duration_ms"]
+    avatar_payload = ["type", "ai_model_id", "start_keyframe_id", "audio_id/audio_generation", "generated_video_inputs"]
+    await message.answer(
+        f"{model['name']}\n{model['id']}\n\n"
+        f"text_to_image: {supports_text_to_image_model(model)}\n"
+        f"image_edit: {supports_image_edit_model(model)}\n"
+        f"image_to_video: {is_image_to_video_compatible(model)}\n"
+        f"avatar_video: {is_avatar_compatible(model)}\n\n"
+        f"text_to_image payload: {', '.join(image_payload)}\n"
+        f"image_edit payload: {', '.join(edit_payload)}\n"
+        f"image_to_video payload: {', '.join(video_payload)}\n"
+        f"avatar_video payload: {', '.join(avatar_payload)}"
+    )
+
+
 @router.callback_query(lambda c: c.data and c.data.startswith("set_video_model:"))
 async def set_video_model_callback(callback: CallbackQuery, settings: Settings, models: ModelService) -> None:
     if not callback.from_user or callback.from_user.id != settings.admin_telegram_id:
@@ -837,13 +877,19 @@ def format_clone_job(row: dict) -> str:
 
 
 def format_job_admin(row: dict) -> str:
-    return (
+    text = (
         f"Job #{row['id']} user={row['telegram_id']}\n"
         f"type={row['job_type']} status={row['status']}\n"
         f"generation={row.get('hedra_generation_id') or '-'}\n"
         f"source_audio={row.get('source_audio_job_id') or '-'}\n"
+        f"model={row.get('selected_model_name') or row.get('selected_model_id') or '-'}\n"
+        f"duration_ms={row.get('duration_ms') or '-'} adapter={row.get('adapter_name') or '-'}\n"
+        f"payload_keys={row.get('request_payload_keys') or '-'}\n"
         f"error={row.get('error_message') or '-'}"
     )
+    if row.get("hedra_error_raw"):
+        text += f"\nhedra_error_raw={str(row['hedra_error_raw'])[:1500]}"
+    return text
 
 
 def format_model_list(title: str, rows: list[dict]) -> str:
@@ -855,7 +901,11 @@ def format_model_list(title: str, rows: list[dict]) -> str:
             f"{row['name']}\n{row['id']}\n"
             f"type={row.get('type')} 1:1={row.get('supports_1_1')} 9:16={row.get('supports_9_16')} 16:9={row.get('supports_16_9')}\n"
             f"540p={row.get('supports_540p')} 720p={row.get('supports_720p')} 1080p={row.get('supports_1080p')}\n"
-            f"premium={row.get('premium')} requires_audio={row.get('requires_audio_input')} start_frame={row.get('requires_start_frame')}"
+            f"duration_required={row.get('requires_duration_ms')} durations={row.get('allowed_duration_ms_json') or '-'} "
+            f"min={row.get('min_duration_ms')} max={row.get('max_duration_ms')} default={row.get('default_duration_ms')}\n"
+            f"premium={row.get('premium')} requires_audio={row.get('requires_audio_input')} start_frame={row.get('requires_start_frame')}\n"
+            f"text2image={row.get('supports_text_to_image')} image_edit={row.get('supports_image_edit')} "
+            f"image_url={row.get('requires_image_url')} asset_id={row.get('supports_image_asset_id')} data_uri={row.get('supports_data_uri')}"
         )
     return title + "\n\n" + "\n\n".join(chunks)
 

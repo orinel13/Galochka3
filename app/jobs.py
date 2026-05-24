@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ from app.hedra_client import HedraApiError, HedraClient
 from app.keyboards import audio_result_keyboard
 from app.models import AUDIO_JOB_TYPES, VIDEO_JOB_TYPES, JobStatus, JobType
 from app.services.credits_service import CreditsService
+from app.services.model_adapters import ModelAdapterError, fallback_image_url_payloads, get_adapter_for_model
 from app.services.model_service import ModelService, supports_image_edit
 from app.services.tts_service import TtsService
 from app.services.video_service import VideoService
@@ -81,9 +84,15 @@ class JobManager:
             "hedra_image_asset_id",
             "text_prompt",
             "prompt_mode",
+            "duration_ms",
             "selected_model_id",
             "selected_model_name",
             "generation_family",
+            "input_image_asset_id",
+            "input_image_url",
+            "adapter_name",
+            "request_payload_keys",
+            "hedra_error_raw",
         }
         columns = ["telegram_id", "job_type", "status", "expires_at", "created_at", "updated_at"]
         values: list[Any] = [telegram_id, job_type, JobStatus.QUEUED.value, iso_after_hours(self.settings.tmp_file_ttl_hours), now, now]
@@ -297,6 +306,7 @@ class JobManager:
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"image_to_video_{job_id}{image_path.suffix}")
             await self._update_job(job_id, hedra_image_asset_id=image_asset_id)
             prompt = job.get("text_prompt")
+            duration_ms = int(job.get("duration_ms") or self.settings.default_video_duration_ms)
             try:
                 generation = await self.hedra.generate_video_from_image(
                     image_asset_id=image_asset_id,
@@ -304,21 +314,43 @@ class JobManager:
                     model_id=model_id,
                     aspect_ratio=self.settings.default_video_aspect_ratio,
                     resolution=self.settings.default_video_resolution,
+                    duration_ms=duration_ms,
                 )
             except HedraApiError as exc:
-                if not prompt:
-                    logger.info("Retry image_to_video with fallback prompt after Hedra error: %s", exc)
-                    prompt = self.settings.default_video_no_audio_prompt
-                    await self._update_job(job_id, text_prompt=prompt, prompt_mode="fallback_default")
+                allowed = extract_allowed_duration_values(str(exc))
+                if _is_duration_error(str(exc)):
+                    duration_ms = normalize_duration_ms(duration_ms, allowed or None)
+                    await self.model_service.mark_duration_required(model_id, allowed or None, duration_ms)
+                    await self._update_job(job_id, duration_ms=duration_ms, hedra_error_raw=_error_raw(exc))
+                    await send_tracked_message(
+                        self.bot,
+                        job["telegram_id"],
+                        f"Задача #{job_id}: модель требует длительность видео. Исправляю на {duration_ms} ms и повторяю.",
+                    )
                     generation = await self.hedra.generate_video_from_image(
                         image_asset_id=image_asset_id,
                         text_prompt=prompt,
                         model_id=model_id,
                         aspect_ratio=self.settings.default_video_aspect_ratio,
                         resolution=self.settings.default_video_resolution,
+                        duration_ms=duration_ms,
+                    )
+                elif not job.get("text_prompt"):
+                    logger.info("Retry image_to_video with fallback prompt after Hedra error: %s", exc)
+                    prompt = self.settings.default_video_no_audio_prompt
+                    await self._update_job(job_id, text_prompt=prompt, prompt_mode="fallback_default", hedra_error_raw=_error_raw(exc))
+                    generation = await self.hedra.generate_video_from_image(
+                        image_asset_id=image_asset_id,
+                        text_prompt=prompt,
+                        model_id=model_id,
+                        aspect_ratio=self.settings.default_video_aspect_ratio,
+                        resolution=self.settings.default_video_resolution,
+                        duration_ms=duration_ms,
                     )
                 else:
+                    await self._update_job(job_id, hedra_error_raw=_error_raw(exc))
                     raise
+            await self._update_job(job_id, duration_ms=duration_ms)
             await self._finish_video_generation(job, generation)
         except TimeoutError:
             await self._timeout(job_id, job["telegram_id"])
@@ -362,13 +394,51 @@ class JobManager:
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"image_edit_{job_id}{image_path.suffix}")
-            generation = await self.hedra.generate_image_edit(
-                image_asset_id=image_asset_id,
-                text_prompt=prompt,
-                model_id=model_id,
-                aspect_ratio=self.settings.default_image_aspect_ratio,
-                resolution=self.settings.default_image_resolution,
+            adapter = get_adapter_for_model(model["raw_json"], "image_edit", model["name"])
+            try:
+                prepared = await adapter.build(
+                    hedra_client=self.hedra,
+                    image_asset_id=image_asset_id,
+                    local_image_path=image_path,
+                    model_id=model_id,
+                    text_prompt=prompt,
+                    aspect_ratio=self.settings.default_image_aspect_ratio,
+                    resolution=self.settings.default_image_resolution,
+                )
+            except ModelAdapterError as exc:
+                await self._update_job(
+                    job_id,
+                    input_image_asset_id=image_asset_id,
+                    adapter_name=adapter.name,
+                    request_payload_keys="",
+                    hedra_error_raw=str(exc),
+                )
+                raise
+            await self._update_job(
+                job_id,
+                input_image_asset_id=image_asset_id,
+                input_image_url=prepared.input_image_url,
+                adapter_name=prepared.adapter_name,
+                request_payload_keys=json.dumps(prepared.payload_keys, ensure_ascii=False),
             )
+            try:
+                generation = await self.hedra.generate_image_edit(prepared.payload)
+            except HedraApiError as exc:
+                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
+                    generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, prepared.input_image_url, dict(model))
+                else:
+                    logger.warning(
+                        "Image edit failed model_id=%s model_name=%s generation_family=image_edit adapter=%s keys=%s asset_id=%s status=%s error=%s",
+                        model_id,
+                        model["name"],
+                        prepared.adapter_name,
+                        prepared.payload_keys,
+                        image_asset_id,
+                        exc.status,
+                        exc,
+                    )
+                    await self._update_job(job_id, hedra_error_raw=_error_raw(exc))
+                    raise
             await self._finish_image_generation(job, generation)
         except TimeoutError:
             await self._timeout(job_id, job["telegram_id"])
@@ -459,6 +529,37 @@ class JobManager:
         await self._update_job(job_id, hedra_asset_id=asset_id)
         return asset_id
 
+    async def _retry_grok_i2i_with_url_fields(
+        self,
+        job_id: int,
+        base_payload: dict[str, Any],
+        image_url: str,
+        model: dict[str, Any],
+    ) -> dict[str, Any]:
+        last_error: HedraApiError | None = None
+        for extra in fallback_image_url_payloads(image_url):
+            payload = dict(base_payload)
+            for key in ("image_url", "image_urls", "images", "reference_image_urls", "source_image_url", "input_image_url"):
+                payload.pop(key, None)
+            payload.update(extra)
+            await self._update_job(job_id, request_payload_keys=json.dumps(list(payload.keys()), ensure_ascii=False))
+            try:
+                return await self.hedra.generate_image_edit(payload)
+            except HedraApiError as exc:
+                last_error = exc
+                logger.warning(
+                    "Grok I2I fallback failed model_id=%s model_name=%s keys=%s status=%s error=%s",
+                    model.get("id"),
+                    model.get("name"),
+                    list(payload.keys()),
+                    exc.status,
+                    exc,
+                )
+        if last_error:
+            await self._update_job(job_id, hedra_error_raw=_error_raw(last_error))
+            raise last_error
+        raise RuntimeError("Не удалось подобрать payload для Grok Imagine I2I.")
+
     async def _source_audio_path(self, source: dict[str, Any], job_id: int) -> Path:
         local = source.get("local_result_path")
         if local and Path(local).exists():
@@ -508,11 +609,19 @@ class JobManager:
         await send_tracked_message(self.bot, telegram_id, f"Задача #{job_id}: {message}")
 
     async def _fail(self, job_id: int, message: str, telegram_id: int | None = None) -> None:
-        await self._update_job(job_id, status=JobStatus.ERROR.value, error_message=short_error(message), completed_at=now_iso())
+        user_message = humanize_user_error(message)
+        update_fields: dict[str, Any] = {
+            "status": JobStatus.ERROR.value,
+            "error_message": short_error(user_message),
+            "completed_at": now_iso(),
+        }
+        if "hedra" in message.lower() or "422" in message or "UNKNOWN" in message:
+            update_fields["hedra_error_raw"] = message[:4000]
+        await self._update_job(job_id, **update_fields)
         row = await self.db.fetchone("SELECT telegram_id FROM jobs WHERE id=?", (job_id,))
         target = telegram_id or (row["telegram_id"] if row else None)
         if target:
-            await send_tracked_message(self.bot, target, f"Задача #{job_id} завершилась ошибкой: {short_error(message)}")
+            await send_tracked_message(self.bot, target, f"Задача #{job_id} завершилась ошибкой: {short_error(user_message)}")
         if "Не найдена Hedra video model" in message and target != self.settings.admin_telegram_id:
             await send_tracked_message(self.bot, self.settings.admin_telegram_id, f"Задача #{job_id}: {short_error(message)}")
 
@@ -567,8 +676,65 @@ def extract_audio_asset_id(data: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_allowed_duration_values(error_text: str) -> list[int]:
+    match = re.search(r"Valid values:\s*\[([^\]]+)\]", error_text, flags=re.IGNORECASE)
+    source = match.group(1) if match else error_text
+    values = sorted({int(value) for value in re.findall(r"\b\d{4,6}\b", source)})
+    return [value for value in values if 1000 <= value <= 120000]
+
+
+def normalize_duration_ms(requested: int, allowed_values: list[int] | None) -> int:
+    if allowed_values:
+        return min(allowed_values, key=lambda value: (abs(value - requested), value))
+    return 5000
+
+
+def _is_duration_error(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return "duration_ms" in lowered and ("required" in lowered or "valid values" in lowered)
+
+
+def _is_missing_image_url_error(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return "image url" in lowered and ("required" in lowered or "at least one" in lowered)
+
+
+def _error_raw(exc: Exception) -> str:
+    if isinstance(exc, HedraApiError) and exc.payload is not None:
+        return compact_error_payload(exc.payload)
+    return str(exc)
+
+
+def compact_error_payload(payload: Any) -> str:
+    try:
+        return json.dumps(_redact_binary(payload), ensure_ascii=False)[:4000]
+    except TypeError:
+        return str(payload)[:4000]
+
+
+def _redact_binary(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {key: _redact_binary(value) for key, value in data.items()}
+    if isinstance(data, list):
+        return [_redact_binary(item) for item in data]
+    if isinstance(data, str) and data.startswith("data:") and "base64," in data[:100]:
+        return data[:40] + "...[base64 redacted]"
+    return data
+
+
 def humanize_exception(exc: Exception) -> str:
     if isinstance(exc, HedraApiError):
         return str(exc)
     message = str(exc).strip()
     return message or "Неизвестная ошибка."
+
+
+def humanize_user_error(message: str) -> str:
+    lowered = message.lower()
+    if "duration_ms" in lowered and ("required" in lowered or "valid values" in lowered):
+        return "Модель требует duration_ms. Выбери длительность видео в настройках и повтори задачу."
+    if "image url" in lowered and "required" in lowered or "at least one image url" in lowered:
+        return "Эта image model требует image URL/reference image, но текущий Hedra API не дал совместимый способ передать загруженное изображение. Попробуй другую image model."
+    if "http 422" in lowered or "'type': 'unknown'" in lowered or '"code":422' in lowered:
+        return "Hedra отклонила параметры модели. Администратор может посмотреть техническую ошибку через /admin_job."
+    return message

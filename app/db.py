@@ -73,9 +73,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   text TEXT,
   text_prompt TEXT,
   prompt_mode TEXT,
+  duration_ms INTEGER,
   selected_model_id TEXT,
   selected_model_name TEXT,
   generation_family TEXT,
+  input_image_asset_id TEXT,
+  input_image_url TEXT,
+  adapter_name TEXT,
+  request_payload_keys TEXT,
+  hedra_error_raw TEXT,
   image_file_id TEXT,
   audio_file_id TEXT,
   source_image_file_id TEXT,
@@ -111,7 +117,19 @@ CREATE TABLE IF NOT EXISTS hedra_models (
   requires_end_frame INTEGER DEFAULT 0,
   requires_audio_input INTEGER DEFAULT 0,
   requires_input_video INTEGER DEFAULT 0,
+  requires_duration_ms INTEGER DEFAULT 0,
+  min_duration_ms INTEGER,
   max_duration_ms INTEGER,
+  default_duration_ms INTEGER,
+  allowed_duration_ms_json TEXT,
+  supports_text_to_image INTEGER DEFAULT 0,
+  supports_image_edit INTEGER DEFAULT 0,
+  supports_reference_images INTEGER DEFAULT 0,
+  requires_image_url INTEGER DEFAULT 0,
+  supports_image_asset_id INTEGER DEFAULT 0,
+  supports_data_uri INTEGER DEFAULT 0,
+  supports_image_to_video INTEGER DEFAULT 0,
+  supports_text_to_video INTEGER DEFAULT 0,
   billing_unit TEXT,
   credit_cost INTEGER,
   credits_per_second REAL,
@@ -132,8 +150,15 @@ CREATE TABLE IF NOT EXISTS user_settings (
   video_resolution TEXT DEFAULT '540p',
   image_aspect_ratio TEXT DEFAULT '1:1',
   image_resolution TEXT DEFAULT '1080p',
+  video_duration_ms INTEGER DEFAULT 5000,
   tts_speed REAL DEFAULT 1.0,
   tts_stability REAL DEFAULT 0.5,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_navigation (
+  telegram_id INTEGER PRIMARY KEY,
+  stack_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
@@ -352,9 +377,15 @@ class Database:
             {
                 "text_prompt": "TEXT",
                 "prompt_mode": "TEXT",
+                "duration_ms": "INTEGER",
                 "selected_model_id": "TEXT",
                 "selected_model_name": "TEXT",
                 "generation_family": "TEXT",
+                "input_image_asset_id": "TEXT",
+                "input_image_url": "TEXT",
+                "adapter_name": "TEXT",
+                "request_payload_keys": "TEXT",
+                "hedra_error_raw": "TEXT",
             },
         )
         await self._ensure_columns(
@@ -370,10 +401,28 @@ class Database:
                 "requires_end_frame": "INTEGER DEFAULT 0",
                 "requires_audio_input": "INTEGER DEFAULT 0",
                 "requires_input_video": "INTEGER DEFAULT 0",
+                "requires_duration_ms": "INTEGER DEFAULT 0",
+                "min_duration_ms": "INTEGER",
+                "default_duration_ms": "INTEGER",
+                "allowed_duration_ms_json": "TEXT",
+                "supports_text_to_image": "INTEGER DEFAULT 0",
+                "supports_image_edit": "INTEGER DEFAULT 0",
+                "supports_reference_images": "INTEGER DEFAULT 0",
+                "requires_image_url": "INTEGER DEFAULT 0",
+                "supports_image_asset_id": "INTEGER DEFAULT 0",
+                "supports_data_uri": "INTEGER DEFAULT 0",
+                "supports_image_to_video": "INTEGER DEFAULT 0",
+                "supports_text_to_video": "INTEGER DEFAULT 0",
                 "billing_unit": "TEXT",
                 "credit_cost": "INTEGER",
                 "credits_per_second": "REAL",
                 "premium": "INTEGER DEFAULT 0",
+            },
+        )
+        await self._ensure_columns(
+            "user_settings",
+            {
+                "video_duration_ms": "INTEGER DEFAULT 5000",
             },
         )
 

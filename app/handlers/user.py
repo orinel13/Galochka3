@@ -31,8 +31,10 @@ from app.keyboards import (
     VOICE_CURRENT,
     VOICE_LIST,
     VOICE_SELECT,
+    VIDEO_DURATION,
     audio_menu,
     choose_voice_keyboard,
+    flow_nav_keyboard,
     image_menu,
     job_history_keyboard,
     main_menu,
@@ -46,6 +48,7 @@ from app.keyboards import (
     voices_keyboard,
 )
 from app.models import JobType
+from app.navigation import BACK_TEXTS, MENU_TEXTS, clear_stack, pop_screen, push_screen
 from app.services.credits_service import CreditsService
 from app.services.model_service import ModelService
 from app.states import AudioPhotoVideoState, GeneratedAudioVideoState, ImageEditState, ImageToVideoState, TextPhotoVideoState, TextToAudioState, TextToImageState
@@ -96,11 +99,47 @@ async def help_message(message: Message, state: FSMContext, db: Database, settin
     )
 
 
+@router.message(F.text.in_(MENU_TEXTS))
+async def go_main_menu(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await send_ui(message, "Главное меню", reply_markup=main_menu())
+
+
+@router.message(F.text.in_(BACK_TEXTS))
+async def universal_back(message: Message, state: FSMContext, db: Database, settings: Settings, models: ModelService) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await cleanup_ui(message, state)
+    previous = await pop_screen(db, message.from_user.id)
+    await render_user_screen(message, db, settings, models, previous)
+
+
+@router.callback_query(lambda c: c.data in {"nav_back", "nav_menu"})
+async def universal_nav_callback(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings, models: ModelService) -> None:
+    row = await db.get_user(callback.from_user.id)
+    if callback.from_user.id != settings.admin_telegram_id and not (row and row["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
+    await cleanup_ui(callback.message, state, delete_trigger=False)
+    if callback.data == "nav_menu":
+        await clear_stack(db, callback.from_user.id)
+        await send_ui(callback.message, "Главное меню", reply_markup=main_menu())
+    else:
+        previous = await pop_screen(db, callback.from_user.id)
+        await render_user_screen(callback.message, db, settings, models, previous, user_id=callback.from_user.id)
+    await callback.answer()
+
+
 @router.message(F.text == AUDIO_SECTION)
 async def open_audio_menu(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await push_screen(db, message.from_user.id, "main")
     await send_ui(message, "Аудио-сценарии", reply_markup=audio_menu())
 
 
@@ -109,6 +148,8 @@ async def open_video_menu(message: Message, state: FSMContext, db: Database, set
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await push_screen(db, message.from_user.id, "main")
     await send_ui(message, "Видео-сценарии", reply_markup=video_menu(is_admin_user(settings, message.from_user.id)))
 
 
@@ -117,6 +158,8 @@ async def open_image_menu(message: Message, state: FSMContext, db: Database, set
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await push_screen(db, message.from_user.id, "main")
     await send_ui(message, "Изображения", reply_markup=image_menu(is_admin_user(settings, message.from_user.id)))
 
 
@@ -125,6 +168,8 @@ async def open_voice_menu(message: Message, state: FSMContext, db: Database, set
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await push_screen(db, message.from_user.id, "main")
     await send_ui(message, "Голос", reply_markup=voice_menu())
 
 
@@ -133,6 +178,8 @@ async def open_settings_menu(message: Message, state: FSMContext, db: Database, 
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
+    await push_screen(db, message.from_user.id, "main")
     await send_ui(message, "Настройки", reply_markup=settings_menu())
 
 
@@ -141,6 +188,7 @@ async def back_to_main(message: Message, state: FSMContext, db: Database, settin
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await clear_stack(db, message.from_user.id)
     await send_ui(message, "Главное меню", reply_markup=main_menu())
 
 
@@ -156,11 +204,44 @@ async def scenario_entry(message: Message, state: FSMContext, db: Database, sett
         TEXT_TO_IMAGE: "text_to_image",
         IMAGE_EDIT: "image_edit",
     }[message.text]
+    section = "image_menu" if scenario in {"text_to_image", "image_edit"} else "video_menu"
+    await push_screen(db, message.from_user.id, section)
     await show_scenario_card(message, db, settings, models, scenario)
 
 
-async def show_scenario_card(message: Message, db: Database, settings: Settings, models: ModelService, scenario: str) -> None:
-    tg_id = message.from_user.id
+async def render_user_screen(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    models: ModelService,
+    screen: dict | None,
+    user_id: int | None = None,
+) -> None:
+    tg_id = user_id or message.from_user.id
+    screen_name = (screen or {}).get("screen") if screen else "main"
+    payload = (screen or {}).get("payload") or {}
+    if screen_name == "audio_menu":
+        await send_ui(message, "Аудио-сценарии", reply_markup=audio_menu())
+    elif screen_name == "video_menu":
+        await send_ui(message, "Видео-сценарии", reply_markup=video_menu(is_admin_user(settings, tg_id)))
+    elif screen_name == "image_menu":
+        await send_ui(message, "Изображения", reply_markup=image_menu(is_admin_user(settings, tg_id)))
+    elif screen_name == "voice_menu":
+        await send_ui(message, "Голос", reply_markup=voice_menu())
+    elif screen_name == "settings_menu":
+        await send_ui(message, "Настройки", reply_markup=settings_menu())
+    elif screen_name == "scenario":
+        scenario = payload.get("scenario")
+        if scenario:
+            await show_scenario_card(message, db, settings, models, scenario, user_id=tg_id)
+        else:
+            await send_ui(message, "Главное меню", reply_markup=main_menu())
+    else:
+        await send_ui(message, "Главное меню", reply_markup=main_menu())
+
+
+async def show_scenario_card(message: Message, db: Database, settings: Settings, models: ModelService, scenario: str, user_id: int | None = None) -> None:
+    tg_id = user_id or message.from_user.id
     user_settings = await db.get_user_settings(tg_id)
     voice = await selected_or_default_voice(db, tg_id)
     family = "image" if scenario in {"text_to_image", "image_edit"} else ("video" if scenario == "image_to_video" else "avatar")
@@ -176,14 +257,19 @@ async def show_scenario_card(message: Message, db: Database, settings: Settings,
         "text_to_image": "Текст → изображение",
         "image_edit": "Редактировать изображение",
     }[scenario]
-    text = (
-        f"Сценарий: {title}\n"
-        f"Голос: {(voice or {}).get('name') or 'не выбран'}\n"
-        f"{'Image' if family == 'image' else ('Video' if family == 'video' else 'Avatar')} model: {(selected_model or {}).get('name') or 'не выбрана'}\n"
-        f"Aspect ratio: {user_settings['image_aspect_ratio'] if family == 'image' else user_settings['video_aspect_ratio']}\n"
-        f"Resolution: {user_settings['image_resolution'] if family == 'image' else user_settings['video_resolution']}\n"
-        f"Prompt: {'по умолчанию' if prompt else 'не задан'}"
-    )
+    lines = [f"Сценарий: {title}"]
+    if scenario == "video_from_text":
+        lines.append(f"Голос: {(voice or {}).get('name') or 'не выбран'}")
+    elif scenario == "video_from_generated_audio":
+        lines.append("Source audio job: выбери из истории аудио")
+    model_label = "Image" if family == "image" else ("Video" if family == "video" else "Avatar")
+    lines.append(f"{model_label} model: {(selected_model or {}).get('name') or 'не выбрана'}")
+    lines.append(f"Aspect ratio: {user_settings['image_aspect_ratio'] if family == 'image' else user_settings['video_aspect_ratio']}")
+    lines.append(f"Resolution: {user_settings['image_resolution'] if family == 'image' else user_settings['video_resolution']}")
+    if family in {"video", "avatar"}:
+        lines.append(f"Duration: {user_settings['video_duration_ms']} ms")
+    lines.append(f"Prompt: {'по умолчанию' if prompt else 'не задан'}")
+    text = "\n".join(lines)
     include_voice = scenario in {"video_from_text", "video_from_uploaded_audio"}
     await send_ui(
         message,
@@ -209,23 +295,24 @@ async def scenario_continue(callback: CallbackQuery, state: FSMContext, db: Data
         await callback.answer()
         return
     await cleanup_ui(callback.message, delete_trigger=False)
+    await push_screen(db, callback.from_user.id, "scenario", {"scenario": scenario})
     if scenario == "video_from_text":
         await state.set_state(TextPhotoVideoState.waiting_photo)
         await state.update_data(prompt_mode="default", text_prompt=settings.default_avatar_prompt)
-        await send_ui(callback.message, "Пришли фото для avatar video.")
+        await send_ui(callback.message, "Пришли фото для avatar video.", reply_markup=flow_nav_keyboard())
     elif scenario == "video_from_uploaded_audio":
         await state.set_state(AudioPhotoVideoState.waiting_photo)
         await state.update_data(prompt_mode="default", text_prompt=settings.default_avatar_prompt)
-        await send_ui(callback.message, "Пришли фото для avatar video.")
+        await send_ui(callback.message, "Пришли фото для avatar video.", reply_markup=flow_nav_keyboard())
     elif scenario == "image_to_video":
         await state.set_state(ImageToVideoState.waiting_photo)
-        await send_ui(callback.message, "Пришли фото для видео без аудио.")
+        await send_ui(callback.message, "Пришли фото для видео без аудио.", reply_markup=flow_nav_keyboard())
     elif scenario == "text_to_image":
         await state.set_state(TextToImageState.waiting_prompt)
-        await send_ui(callback.message, "Опиши изображение, которое нужно сгенерировать.")
+        await send_ui(callback.message, "Опиши изображение, которое нужно сгенерировать.", reply_markup=flow_nav_keyboard())
     elif scenario == "image_edit":
         await state.set_state(ImageEditState.waiting_image)
-        await send_ui(callback.message, "Пришли изображение для редактирования.")
+        await send_ui(callback.message, "Пришли изображение для редактирования.", reply_markup=flow_nav_keyboard())
     await callback.answer()
 
 
@@ -246,10 +333,24 @@ async def scenario_model(callback: CallbackQuery, db: Database, settings: Settin
     await callback.answer()
 
 
+@router.callback_query(lambda c: c.data in {"setting:video_duration_ms", "setting:video_quality"})
+async def scenario_setting(callback: CallbackQuery) -> None:
+    if callback.data == "setting:video_duration_ms":
+        await send_ui(
+            callback.message,
+            "Выбери длительность видео:",
+            reply_markup=options_keyboard("video_duration_ms", ["5000", "6000", "7000", "8000", "9000", "10000", "11000", "12000", "13000", "14000", "15000"]),
+        )
+    else:
+        await send_ui(callback.message, "Качество меняется в разделе ⚙️ Настройки: Video aspect ratio / Video resolution.")
+    await callback.answer()
+
+
 @router.callback_query(lambda c: c.data == "scenario_back")
-async def scenario_back(callback: CallbackQuery) -> None:
+async def scenario_back(callback: CallbackQuery, db: Database, settings: Settings, models: ModelService) -> None:
     await cleanup_ui(callback.message, delete_trigger=False)
-    await send_ui(callback.message, "Главное меню", reply_markup=main_menu())
+    previous = await pop_screen(db, callback.from_user.id)
+    await render_user_screen(callback.message, db, settings, models, previous, user_id=callback.from_user.id)
     await callback.answer()
 
 
@@ -297,7 +398,7 @@ async def priority_utility_buttons(
         await send_jobs_history(message, db)
 
 
-@router.message(F.text.in_({"Текущие параметры", "Video aspect ratio", "Video resolution", "Image aspect ratio", "Image resolution", "TTS speed", "TTS stability", "Очистить временные результаты", "Prompt для видео", "Prompt для изображения"}))
+@router.message(F.text.in_({"Текущие параметры", "Video aspect ratio", "Video resolution", VIDEO_DURATION, "Image aspect ratio", "Image resolution", "TTS speed", "TTS stability", "Очистить временные результаты", "Prompt для видео", "Prompt для изображения"}))
 async def priority_settings_buttons(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager, models: ModelService) -> None:
     if not await ensure_allowed(message, db, settings):
         return
@@ -315,7 +416,7 @@ async def priority_settings_buttons(message: Message, state: FSMContext, db: Dat
             f"Avatar model: {(avatar or {}).get('name') or 'по умолчанию'}\n"
             f"Video model: {(video or {}).get('name') or 'по умолчанию'}\n"
             f"Image model: {(image or {}).get('name') or 'по умолчанию'}\n"
-            f"Video: {user_settings['video_aspect_ratio']} / {user_settings['video_resolution']}\n"
+            f"Video: {user_settings['video_aspect_ratio']} / {user_settings['video_resolution']} / {user_settings['video_duration_ms']} ms\n"
             f"Image: {user_settings['image_aspect_ratio']} / {user_settings['image_resolution']}\n"
             f"TTS: speed={user_settings['tts_speed']} stability={user_settings['tts_stability']}",
         )
@@ -337,6 +438,7 @@ async def priority_settings_buttons(message: Message, state: FSMContext, db: Dat
     options = {
         "Video aspect ratio": ("video_aspect_ratio", ["1:1", "9:16", "16:9"]),
         "Video resolution": ("video_resolution", ["540p", "720p", "1080p"]),
+        VIDEO_DURATION: ("video_duration_ms", ["5000", "6000", "7000", "8000", "9000", "10000", "11000", "12000", "13000", "14000", "15000"]),
         "Image aspect ratio": ("image_aspect_ratio", ["1:1", "9:16", "16:9"]),
         "Image resolution": ("image_resolution", ["540p", "720p", "1080p"]),
         "TTS speed": ("tts_speed", ["0.7", "0.85", "1.0", "1.1", "1.2"]),
@@ -350,8 +452,9 @@ async def text_to_audio_start(message: Message, state: FSMContext, db: Database,
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await push_screen(db, message.from_user.id, "audio_menu")
     await state.set_state(TextToAudioState.waiting_text)
-    await send_ui(message, "Отправь текст для озвучки.")
+    await send_ui(message, "Отправь текст для озвучки.", reply_markup=flow_nav_keyboard())
 
 
 @router.message(TextToAudioState.waiting_text)
@@ -389,8 +492,9 @@ async def text_photo_video_start(message: Message, state: FSMContext, db: Databa
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await push_screen(db, message.from_user.id, "scenario", {"scenario": "video_from_text"})
     await state.set_state(TextPhotoVideoState.waiting_photo)
-    await send_ui(message, "Пришли фото для видео.")
+    await send_ui(message, "Пришли фото для видео.", reply_markup=flow_nav_keyboard())
 
 
 @router.message(TextPhotoVideoState.waiting_photo)
@@ -403,7 +507,7 @@ async def text_photo_video_photo(message: Message, state: FSMContext, db: Databa
         return
     await state.update_data(image_file_id=file_id)
     await state.set_state(TextPhotoVideoState.waiting_text)
-    await send_ui(message, "Теперь отправь текст для видео.")
+    await send_ui(message, "Теперь отправь текст для видео.", reply_markup=flow_nav_keyboard())
 
 
 @router.message(TextPhotoVideoState.waiting_text)
@@ -435,8 +539,9 @@ async def audio_photo_video_start(message: Message, state: FSMContext, db: Datab
     if not await ensure_allowed(message, db, settings):
         return
     await cleanup_ui(message, state)
+    await push_screen(db, message.from_user.id, "scenario", {"scenario": "video_from_uploaded_audio"})
     await state.set_state(AudioPhotoVideoState.waiting_photo)
-    await send_ui(message, "Пришли фото для видео.")
+    await send_ui(message, "Пришли фото для видео.", reply_markup=flow_nav_keyboard())
 
 
 @router.message(AudioPhotoVideoState.waiting_photo)
@@ -449,7 +554,7 @@ async def audio_photo_video_photo(message: Message, state: FSMContext, db: Datab
         return
     await state.update_data(image_file_id=file_id)
     await state.set_state(AudioPhotoVideoState.waiting_audio)
-    await send_ui(message, "Теперь пришли аудио, voice или audio-документ mp3/wav/ogg.")
+    await send_ui(message, "Теперь пришли аудио, voice или audio-документ mp3/wav/ogg.", reply_markup=flow_nav_keyboard())
 
 
 @router.message(AudioPhotoVideoState.waiting_audio)
@@ -490,9 +595,10 @@ async def audio_to_video(callback: CallbackQuery, state: FSMContext, db: Databas
         await callback.answer()
         return
     await cleanup_ui(callback.message, state, delete_trigger=False)
+    await push_screen(db, callback.from_user.id, "scenario", {"scenario": "video_from_generated_audio"})
     await state.set_state(GeneratedAudioVideoState.waiting_photo)
     await state.update_data(source_audio_job_id=job_id)
-    await send_ui(callback.message, "Пришли фото для видео из этого аудио.")
+    await send_ui(callback.message, "Пришли фото для видео из этого аудио.", reply_markup=flow_nav_keyboard())
     await callback.answer()
 
 
@@ -578,6 +684,7 @@ async def create_uploaded_audio_video_job(message: Message, state: FSMContext, d
 async def create_image_to_video_job(message: Message, state: FSMContext, db: Database, jobs: JobManager, text_prompt: str | None, prompt_mode: str) -> None:
     data = await state.get_data()
     telegram_id = message.chat.id
+    user_settings = await db.get_user_settings(telegram_id)
     model = await selected_model_for_job(db, telegram_id, "video")
     job_id = await jobs.create_job(
         telegram_id=telegram_id,
@@ -586,6 +693,7 @@ async def create_image_to_video_job(message: Message, state: FSMContext, db: Dat
         image_file_id=data["image_file_id"],
         text_prompt=text_prompt,
         prompt_mode=prompt_mode,
+        duration_ms=user_settings["video_duration_ms"],
         selected_model_id=model["id"] if model else None,
         selected_model_name=model["name"] if model else None,
     )
@@ -635,7 +743,7 @@ async def prompt_write(callback: CallbackQuery, state: FSMContext) -> None:
         await send_ui(callback.message, "Сначала выбери сценарий и входные файлы.")
         await callback.answer()
         return
-    await send_ui(callback.message, "Напиши prompt одним сообщением.")
+    await send_ui(callback.message, "Напиши prompt одним сообщением.", reply_markup=flow_nav_keyboard())
     await callback.answer()
 
 
@@ -715,7 +823,8 @@ async def image_edit_image(message: Message, state: FSMContext, db: Database, se
     await send_ui(
         message,
         "Напиши prompt редактирования.\n"
-        "Например: замени фон на студийный, сделай тёплый вечерний свет, сохрани лицо и позу."
+        "Например: замени фон на студийный, сделай тёплый вечерний свет, сохрани лицо и позу.",
+        reply_markup=flow_nav_keyboard(),
     )
 
 
@@ -939,7 +1048,7 @@ async def current_settings(message: Message, db: Database, settings: Settings, m
         f"Avatar model: {(avatar or {}).get('name') or 'по умолчанию'}\n"
         f"Video model: {(video or {}).get('name') or 'по умолчанию'}\n"
         f"Image model: {(image or {}).get('name') or 'по умолчанию'}\n"
-        f"Video: {user_settings['video_aspect_ratio']} / {user_settings['video_resolution']}\n"
+        f"Video: {user_settings['video_aspect_ratio']} / {user_settings['video_resolution']} / {user_settings['video_duration_ms']} ms\n"
         f"Image: {user_settings['image_aspect_ratio']} / {user_settings['image_resolution']}\n"
         f"TTS: speed={user_settings['tts_speed']} stability={user_settings['tts_stability']}"
     )
@@ -981,6 +1090,8 @@ async def setting_option_callback(callback: CallbackQuery, db: Database, setting
     _, key, value = callback.data.split(":", 2)
     if key in {"tts_speed", "tts_stability"}:
         await db.update_user_settings(callback.from_user.id, **{key: float(value)})
+    elif key == "video_duration_ms":
+        await db.update_user_settings(callback.from_user.id, **{key: int(value)})
     else:
         await db.update_user_settings(callback.from_user.id, **{key: value})
     await send_ui(callback.message, f"Настройка обновлена: {key} = {value}")

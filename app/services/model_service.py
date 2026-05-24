@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.db import Database
@@ -24,14 +25,18 @@ class ModelService:
             description = str(model.get("description") or model.get("summary") or "")
             model_type = model.get("type") or model.get("model_type") or ""
             raw = json.dumps(model, ensure_ascii=False)
+            allowed_durations = _duration_values(model)
             await self.db.execute(
                 """
                 INSERT INTO hedra_models
                   (id, name, description, type, supports_1_1, supports_9_16, supports_16_9,
                    supports_540p, supports_720p, supports_1080p, supports_1440p, supports_2160p,
                    requires_start_frame, requires_end_frame, requires_audio_input, requires_input_video,
-                   max_duration_ms, billing_unit, credit_cost, credits_per_second, premium, raw_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   requires_duration_ms, min_duration_ms, max_duration_ms, default_duration_ms, allowed_duration_ms_json,
+                   supports_text_to_image, supports_image_edit, supports_reference_images, requires_image_url,
+                   supports_image_asset_id, supports_data_uri, supports_image_to_video, supports_text_to_video,
+                   billing_unit, credit_cost, credits_per_second, premium, raw_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   name=excluded.name,
                   description=excluded.description,
@@ -48,7 +53,19 @@ class ModelService:
                   requires_end_frame=excluded.requires_end_frame,
                   requires_audio_input=excluded.requires_audio_input,
                   requires_input_video=excluded.requires_input_video,
+                  requires_duration_ms=excluded.requires_duration_ms,
+                  min_duration_ms=excluded.min_duration_ms,
                   max_duration_ms=excluded.max_duration_ms,
+                  default_duration_ms=excluded.default_duration_ms,
+                  allowed_duration_ms_json=excluded.allowed_duration_ms_json,
+                  supports_text_to_image=excluded.supports_text_to_image,
+                  supports_image_edit=excluded.supports_image_edit,
+                  supports_reference_images=excluded.supports_reference_images,
+                  requires_image_url=excluded.requires_image_url,
+                  supports_image_asset_id=excluded.supports_image_asset_id,
+                  supports_data_uri=excluded.supports_data_uri,
+                  supports_image_to_video=excluded.supports_image_to_video,
+                  supports_text_to_video=excluded.supports_text_to_video,
                   billing_unit=excluded.billing_unit,
                   credit_cost=excluded.credit_cost,
                   credits_per_second=excluded.credits_per_second,
@@ -73,7 +90,19 @@ class ModelService:
                     int(_truthy(model, "requires_end_frame", "requiresEndFrame", "end_frame_required")),
                     int(_truthy(model, "requires_audio_input", "requiresAudioInput", "audio_required")),
                     int(_truthy(model, "requires_input_video", "requiresInputVideo", "input_video_required")),
-                    _max_duration(model),
+                    int(_requires_duration_ms(model, allowed_durations)),
+                    min(allowed_durations) if allowed_durations else _min_duration(model),
+                    max(allowed_durations) if allowed_durations else _max_duration(model),
+                    _default_duration(model, allowed_durations),
+                    json.dumps(allowed_durations, ensure_ascii=False) if allowed_durations else None,
+                    int(supports_text_to_image_model(model)),
+                    int(supports_image_edit_model(model)),
+                    int(supports_reference_images_model(model)),
+                    int(requires_image_url_model(model)),
+                    int(supports_image_asset_id_model(model)),
+                    int(supports_data_uri_model(model)),
+                    int(supports_image_to_video_model(model)),
+                    int(supports_text_to_video_model(model)),
                     _billing_unit(model),
                     _credit_cost(model),
                     _credits_per_second(model),
@@ -207,6 +236,17 @@ class ModelService:
         rows = await self.compatible_image_models()
         return rows[0]["id"] if rows else None
 
+    async def mark_duration_required(self, model_id: str, allowed_values: list[int] | None, used_value: int | None) -> None:
+        fields: dict[str, Any] = {"requires_duration_ms": 1}
+        if allowed_values:
+            fields["allowed_duration_ms_json"] = json.dumps(allowed_values, ensure_ascii=False)
+            fields["min_duration_ms"] = min(allowed_values)
+            fields["max_duration_ms"] = max(allowed_values)
+        if used_value:
+            fields["default_duration_ms"] = used_value
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        await self.db.execute(f"UPDATE hedra_models SET {assignments}, updated_at=? WHERE id=?", [*fields.values(), now_iso(), model_id])
+
 
 def _contains_text(model: dict[str, Any], needle: str) -> bool:
     return needle.lower() in json.dumps(model, ensure_ascii=False).lower()
@@ -226,6 +266,50 @@ def _max_duration(model: dict[str, Any]) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _min_duration(model: dict[str, Any]) -> int | None:
+    for key in ("min_duration_ms", "minDurationMs", "minimum_duration_ms"):
+        value = model.get(key)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    values = _duration_values(model)
+    return min(values) if values else None
+
+
+def _duration_values(model: dict[str, Any]) -> list[int]:
+    values: set[int] = set()
+    raw_values = model.get("durations") or model.get("duration_ms") or model.get("allowed_duration_ms")
+    if isinstance(raw_values, list):
+        for item in raw_values:
+            values.update(_duration_numbers(str(item)))
+    text = json.dumps(model, ensure_ascii=False).lower()
+    if "duration" in text:
+        values.update(_duration_numbers(text))
+    return sorted(value for value in values if 1000 <= value <= 120000)
+
+
+def _duration_numbers(text: str) -> list[int]:
+    return [int(match) for match in re.findall(r"\b\d{4,6}\b", text)]
+
+
+def _default_duration(model: dict[str, Any], allowed: list[int]) -> int | None:
+    for key in ("default_duration_ms", "defaultDurationMs", "default_duration"):
+        value = model.get(key)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return allowed[0] if allowed else None
+
+
+def _requires_duration_ms(model: dict[str, Any], allowed: list[int]) -> bool:
+    text = json.dumps(model, ensure_ascii=False).lower()
+    return bool(allowed) or "duration_ms" in text and ("required" in text or "duration" in text)
 
 
 def _truthy(model: dict[str, Any], *keys: str) -> bool:
@@ -298,7 +382,7 @@ def is_avatar_compatible(model: dict[str, Any], aspect_ratio: str = "1:1", resol
 def is_image_to_video_compatible(model: dict[str, Any], aspect_ratio: str = "1:1", resolution: str = "540p") -> bool:
     if not _is_video(model) or model.get("requires_audio_input"):
         return False
-    return _supports_aspect(model, aspect_ratio) and (_supports_resolution(model, resolution) or resolution == "540p")
+    return supports_image_to_video_model(model) and _supports_aspect(model, aspect_ratio) and (_supports_resolution(model, resolution) or resolution == "540p")
 
 
 def is_image_model(model: dict[str, Any], aspect_ratio: str = "1:1", resolution: str = "1080p") -> bool:
@@ -309,8 +393,49 @@ def is_image_model(model: dict[str, Any], aspect_ratio: str = "1:1", resolution:
 
 
 def supports_image_edit(model: dict[str, Any]) -> bool:
+    return supports_image_edit_model(model)
+
+
+def supports_text_to_image_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or json.dumps(model, ensure_ascii=False)}".lower()
+    return "image" in text or "imagine" in text or "banana" in text
+
+
+def supports_image_edit_model(model: dict[str, Any]) -> bool:
     text = f"{model.get('name') or ''} {model.get('description') or ''} {model.get('raw_json') or ''}".lower()
-    return any(marker in text for marker in ("image edit", "edit image", "reference image", "image-to-image", "input_image", "image_id"))
+    return any(marker in text for marker in ("image edit", "edit image", "reference image", "reference_image", "image-to-image", "i2i", "input_image", "image_url", "image_urls", "grok imagine"))
+
+
+def supports_reference_images_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('raw_json') or json.dumps(model, ensure_ascii=False)}".lower()
+    return any(marker in text for marker in ("reference_image", "reference image", "image_urls", "image_url", "input_image"))
+
+
+def requires_image_url_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('raw_json') or json.dumps(model, ensure_ascii=False)} {model.get('name') or ''}".lower()
+    return "image_url" in text or "image urls" in text or ("grok" in text and "i2i" in text)
+
+
+def supports_image_asset_id_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('raw_json') or json.dumps(model, ensure_ascii=False)}".lower()
+    return any(marker in text for marker in ("image_id", "image_asset_id", "reference_image_ids"))
+
+
+def supports_data_uri_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('raw_json') or json.dumps(model, ensure_ascii=False)}".lower()
+    return "data uri" in text or "data:" in text or "base64" in text
+
+
+def supports_image_to_video_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or ''}".lower()
+    if model.get("requires_audio_input"):
+        return False
+    return "video" in text and ("i2v" in text or "image-to-video" in text or "start_frame" in text or model.get("requires_start_frame"))
+
+
+def supports_text_to_video_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or ''}".lower()
+    return "video" in text and not model.get("requires_start_frame") and not model.get("requires_audio_input")
 
 
 def _is_recommended_avatar_model(model: dict[str, Any]) -> bool:

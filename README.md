@@ -126,7 +126,12 @@ sudo journalctl -u galochka-hedra-bot -f
 ## Динамическое меню
 Главное меню показывает только разделы: `🎙 Аудио`, `🎬 Видео`, `🖼 Изображения`, `🎭 Голос`, `⚙️ Настройки`, `📊 Баланс`, `🕘 Мои задачи`, `ℹ️ Помощь`.
 
-Внутри раздела открываются сценарии. Для генеративных сценариев бот показывает карточку параметров: голос, модель, aspect ratio, resolution и prompt. Дальше доступны кнопки `Продолжить`, `Изменить голос`, `Изменить модель`, `Изменить prompt`, `Назад`.
+Внутри раздела открываются сценарии. Для генеративных сценариев бот показывает карточку параметров: голос, модель, aspect ratio, resolution, duration и prompt. Дальше доступны кнопки `Продолжить`, `Изменить голос`, `Изменить prompt`, `Изменить длительность`, `Изменить качество`, `⬅️ Назад`, `🏠 Меню`.
+
+## Навигация
+На каждом пользовательском экране есть `⬅️ Назад` и `🏠 Меню`.
+
+`⬅️ Назад` очищает текущий ввод/FSM-состояние и возвращает на предыдущий экран. `🏠 Меню` сбрасывает текущий flow и возвращает в главное меню. Текстовые варианты `Назад`, `назад`, `Меню`, `/menu`, `/start` тоже поддерживаются.
 
 ## Выбор Hedra models
 Все модели берутся только из `GET /models`.
@@ -143,28 +148,31 @@ Admin:
 /admin_model <model_id>
 ```
 
-User:
-- `🎬 Видео` -> `Выбрать avatar model` или `Выбрать video model`
-- `🖼 Изображения` -> `Выбрать image model`
+Обычные пользователи не выбирают модели: модели задаёт администратор. Пользователь может выбрать голос и свои базовые параметры качества/длительности.
 
 Preferred names вроде `Hedra Omnia`, `Hedra Character 3`, `Nano Banana Pro`, `Grok Imagine`, `Kling V3 Standard`, `Sora 2 Pro` используются только как удобные имена. Если модель не приходит из `/models`, бот её не вызывает.
 
 ## Text prompt для avatar/video
 Для avatar/video сценариев бот спрашивает prompt:
-- `Пропустить`
 - `Написать prompt`
 - `Prompt по умолчанию`
+- `Без prompt`
 
 Prompt передаётся в `generated_video_inputs.text_prompt` только если он не пустой. Если API требует prompt и вернёт ошибку, image-to-video повторяется с fallback prompt.
 
 ## Фото -> видео без аудио
-Открой `🎬 Видео` -> `Фото → видео без аудио`, проверь карточку параметров, нажми `Продолжить`, отправь фото и выбери prompt. Модель не должна требовать audio input.
+Открой `🎬 Видео` -> `Фото → видео без аудио`, проверь карточку параметров, нажми `Продолжить`, отправь фото и выбери prompt. Модель не должна требовать audio input. Для I2V бот всегда передаёт `duration_ms`; если Hedra вернёт допустимые значения, бот один раз подберёт ближайшую длительность и повторит запрос.
 
 ## Текст -> изображение
 Открой `🖼 Изображения` -> `Текст → изображение`, проверь image model, нажми `Продолжить` и отправь prompt.
 
 ## Редактирование изображения
-Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Если выбранная image model не показывает поддержку image edit/reference image в `/models`, бот честно вернёт ошибку, что режим недоступен через текущий public API.
+Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Image edit использует отдельный adapter: бот загружает изображение как Hedra asset и пытается передать image URL/reference image/data URI только если выбранная модель/API это поддерживает. Если совместимого способа нет, бот честно вернёт ошибку.
+
+## Почему модель есть в web UI Hedra, но может не работать в API
+Бот работает только через официальный Hedra API. Модели синхронизируются через `GET /models`, а payload для каждой модели может отличаться.
+
+`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` может требовать image URL/reference image, а не просто Hedra asset id. Если API не возвращает совместимый способ передачи изображения, бот не использует browser automation и сообщает ошибку.
 
 ## Web UI модель не видна в API
 Если модель или голос есть в Hedra web UI, но не приходит через public API (`/models`, `/voices`, `/assets`), бот не может использовать её официально. Browser automation Hedra Studio не используется.
@@ -203,4 +211,4 @@ scripts/restore_db.sh ./data/backups/galochka_YYYYMMDDHHMMSS.db
 ## Основные команды
 User: `/start`, `/voices`, `/setvoice`, `/balance`, `/help`.
 
-Admin: `/admin`, `/admin_users`, `/admin_allow`, `/admin_deny`, `/admin_revoke`, `/admin_voices`, `/admin_hedra_voices`, `/admin_voices_sync`, `/admin_add_voice`, `/admin_clone_voice`, `/admin_models_sync`, `/admin_models`, `/admin_set_video_model`, `/admin_balance`, `/admin_jobs`, `/admin_job`, `/admin_cancel_job`, `/admin_cleanup`, `/admin_export_db`, `/admin_hedra_test`.
+Admin: `/admin`, `/admin_users`, `/admin_allow`, `/admin_deny`, `/admin_revoke`, `/admin_voices`, `/admin_hedra_voices`, `/admin_voices_sync`, `/admin_add_voice`, `/admin_clone_voice`, `/admin_models_sync`, `/admin_models`, `/admin_set_video_model`, `/admin_model`, `/admin_test_model`, `/admin_balance`, `/admin_jobs`, `/admin_job`, `/admin_cancel_job`, `/admin_cleanup`, `/admin_export_db`, `/admin_hedra_test`.

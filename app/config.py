@@ -41,6 +41,9 @@ class Settings:
     default_tts_speed: float
     default_video_aspect_ratio: str
     default_video_resolution: str
+    default_video_duration_ms: int
+    min_video_duration_ms: int
+    max_video_duration_ms: int
     default_image_aspect_ratio: str
     default_image_resolution: str
     default_avatar_prompt: str
@@ -101,6 +104,9 @@ def load_settings(require_secrets: bool = True) -> Settings:
         default_tts_speed=_float("DEFAULT_TTS_SPEED", 1.0),
         default_video_aspect_ratio=os.getenv("DEFAULT_VIDEO_ASPECT_RATIO", "1:1"),
         default_video_resolution=os.getenv("DEFAULT_VIDEO_RESOLUTION", "540p"),
+        default_video_duration_ms=_int("DEFAULT_VIDEO_DURATION_MS", 5000),
+        min_video_duration_ms=_int("MIN_VIDEO_DURATION_MS", 5000),
+        max_video_duration_ms=_int("MAX_VIDEO_DURATION_MS", 15000),
         default_image_aspect_ratio=os.getenv("DEFAULT_IMAGE_ASPECT_RATIO", "1:1"),
         default_image_resolution=os.getenv("DEFAULT_IMAGE_RESOLUTION", "1080p"),
         default_avatar_prompt=os.getenv("DEFAULT_AVATAR_PROMPT", "A person speaking naturally to the camera with clear lip sync."),
