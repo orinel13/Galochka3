@@ -110,6 +110,19 @@ sudo journalctl -u galochka-hedra-bot -f
 /admin_hedra_test
 ```
 
+## Video model
+```text
+/admin_models_sync
+/admin_models
+```
+
+`/admin_models` показывает короткий список video/avatar моделей с кнопками выбора. Быстрый выбор:
+
+```text
+/admin_set_omnia_model
+/admin_set_character3_model
+```
+
 ## Текст -> аудио -> видео
 1. Нажми `🎙 Текст → аудио`.
 2. Отправь текст.

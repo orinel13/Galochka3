@@ -72,3 +72,11 @@ def voices_keyboard(voices: list[dict[str, str]]) -> InlineKeyboardMarkup:
         for voice in voices
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Нет голосов", callback_data="noop")]])
+
+
+def video_models_keyboard(models: list[dict[str, str]], selected_id: str | None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, model in enumerate(models, start=1):
+        marker = "✅ " if model["id"] == selected_id else ""
+        rows.append([InlineKeyboardButton(text=f"{marker}{model['name']}", callback_data=f"set_video_model:{index}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Модели не найдены", callback_data="noop")]])

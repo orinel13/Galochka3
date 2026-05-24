@@ -20,8 +20,10 @@
 - `/admin_clone_voice` - voice clone flow.
 - `/admin_clone_status` - последние clone jobs.
 - `/admin_models_sync` - синхронизировать Hedra models.
-- `/admin_models` - список локально сохранённых моделей.
+- `/admin_models` - короткий список video/avatar моделей с кнопками выбора.
 - `/admin_set_video_model <model_id>` - выбрать video model.
+- `/admin_set_omnia_model` - выбрать Hedra Omnia, если она есть в списке моделей.
+- `/admin_set_character3_model` - выбрать Hedra Character 3, если она есть в списке моделей.
 - `/admin_balance` - баланс с записью snapshot.
 - `/admin_jobs` - последние задачи.
 - `/admin_job <job_id>` - детали задачи.

@@ -56,12 +56,40 @@ class ModelService:
         rows = await self.db.fetchall("SELECT * FROM hedra_models ORDER BY name")
         return [dict(row) for row in rows]
 
+    async def list_avatar_video_models(self) -> list[dict[str, Any]]:
+        rows = await self.db.fetchall("SELECT * FROM hedra_models")
+        models = [dict(row) for row in rows]
+        preferred = [model for model in models if _is_recommended_avatar_model(model)]
+        if preferred:
+            return sorted(preferred, key=_model_sort_key)
+        fallback = [model for model in models if _is_video(model)]
+        return sorted(fallback, key=_model_sort_key)
+
     async def set_video_model(self, model_id: str) -> bool:
         row = await self.db.fetchone("SELECT id FROM hedra_models WHERE id=?", (model_id,))
         if not row:
             return False
         await self.db.set_setting("selected_video_model_id", model_id)
         return True
+
+    async def set_preferred_by_name(self, preferred: str) -> dict[str, Any] | None:
+        rows = await self.db.fetchall("SELECT * FROM hedra_models")
+        models = [dict(row) for row in rows]
+        preferred_lower = preferred.lower()
+        candidates = [model for model in models if preferred_lower in (model.get("name") or "").lower()]
+        if preferred_lower in {"character", "character 3", "hedra character 3"}:
+            candidates = [
+                model for model in models
+                if "character" in (model.get("name") or "").lower() and ("3" in (model.get("name") or "") or "iii" in (model.get("name") or "").lower())
+            ] or [model for model in models if "character" in (model.get("name") or "").lower()]
+        if preferred_lower in {"omnia", "hedra omnia"}:
+            candidates = [model for model in models if "omnia" in (model.get("name") or "").lower()]
+        candidates = [model for model in candidates if _is_video(model)] or candidates
+        if not candidates:
+            return None
+        chosen = sorted(candidates, key=_model_sort_key)[0]
+        await self.db.set_setting("selected_video_model_id", chosen["id"])
+        return chosen
 
     async def selected_video_model_id(self) -> str | None:
         value = await self.db.get_setting("selected_video_model_id")
@@ -112,3 +140,25 @@ def _max_duration(model: dict[str, Any]) -> int | None:
 def _is_video(model: dict[str, Any]) -> bool:
     text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or ''}".lower()
     return "video" in text or "avatar" in text or "character" in text
+
+
+def _is_recommended_avatar_model(model: dict[str, Any]) -> bool:
+    text = f"{model.get('name') or ''} {model.get('type') or ''} {model.get('raw_json') or ''}".lower()
+    if not _is_video(model):
+        return False
+    return "omnia" in text or "character" in text or "avatar" in text
+
+
+def _model_sort_key(model: dict[str, Any]) -> tuple[int, str]:
+    text = f"{model.get('name') or ''} {model.get('raw_json') or ''}".lower()
+    if "omnia" in text:
+        rank = 0
+    elif "character" in text and "3" in text:
+        rank = 1
+    elif "character" in text:
+        rank = 2
+    elif "avatar" in text:
+        rank = 3
+    else:
+        rank = 9
+    return rank, model.get("name") or model.get("id") or ""

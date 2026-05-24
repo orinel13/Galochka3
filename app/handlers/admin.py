@@ -5,7 +5,7 @@ from uuid import UUID
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.access import ensure_admin
 from app.config import Settings
@@ -13,6 +13,7 @@ from app.db import Database
 from app.files import FileValidationError, FilesService
 from app.hedra_client import HedraClient
 from app.jobs import JobManager
+from app.keyboards import video_models_keyboard
 from app.services.cleanup_service import CleanupService
 from app.services.credits_service import CreditsService
 from app.services.model_service import ModelService
@@ -35,6 +36,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
         "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_set_video_model <model_id>\n"
+        "/admin_set_omnia_model\n/admin_set_character3_model\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
         "/admin_cleanup\n/admin_export_db\n/admin_hedra_test"
     )
@@ -475,19 +477,22 @@ async def admin_models_sync(message: Message, settings: Settings, models: ModelS
 async def admin_models(message: Message, settings: Settings, models: ModelService) -> None:
     if not await ensure_admin(message, settings):
         return
-    rows = await models.list_models()
+    rows = await models.list_avatar_video_models()
     selected = await models.selected_video_model_id()
     if not rows:
         await message.answer("Моделей нет. Выполни /admin_models_sync.")
         return
     chunks = []
-    for row in rows[:30]:
+    for row in rows[:12]:
         mark = " ✅" if row["id"] == selected else ""
         chunks.append(
             f"{row['id']}{mark}\n{row['name']}\ntype={row.get('type')} 1:1={row.get('supports_1_1')} "
             f"540p={row.get('supports_540p')} max_ms={row.get('max_duration_ms')}"
         )
-    await message.answer("\n\n".join(chunks))
+    await message.answer(
+        "Video/avatar модели:\n\n" + "\n\n".join(chunks),
+        reply_markup=video_models_keyboard(rows[:12], selected),
+    )
 
 
 @router.message(Command("admin_set_video_model"))
@@ -502,6 +507,50 @@ async def admin_set_video_model(message: Message, settings: Settings, models: Mo
         await message.answer(f"Video model выбрана: {model_id}")
     else:
         await message.answer("Модель не найдена. Выполни /admin_models_sync.")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("set_video_model:"))
+async def set_video_model_callback(callback: CallbackQuery, settings: Settings, models: ModelService) -> None:
+    if not callback.from_user or callback.from_user.id != settings.admin_telegram_id:
+        await callback.answer("Недоступно.", show_alert=True)
+        return
+    try:
+        index = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректная кнопка.", show_alert=True)
+        return
+    rows = await models.list_avatar_video_models()
+    if index < 1 or index > len(rows):
+        await callback.answer("Модель не найдена. Обнови /admin_models.", show_alert=True)
+        return
+    model_id = rows[index - 1]["id"]
+    if await models.set_video_model(model_id):
+        await callback.message.answer(f"Video model выбрана:\n{rows[index - 1]['name']}\n{model_id}")
+        await callback.answer("Выбрано.")
+    else:
+        await callback.answer("Модель не найдена.", show_alert=True)
+
+
+@router.message(Command("admin_set_omnia_model"))
+async def admin_set_omnia_model(message: Message, settings: Settings, models: ModelService) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    chosen = await models.set_preferred_by_name("omnia")
+    if not chosen:
+        await message.answer("Hedra Omnia не найдена. Выполни /admin_models_sync и /admin_models.")
+        return
+    await message.answer(f"Выбрана Hedra Omnia:\n{chosen['name']}\n{chosen['id']}")
+
+
+@router.message(Command("admin_set_character3_model"))
+async def admin_set_character3_model(message: Message, settings: Settings, models: ModelService) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    chosen = await models.set_preferred_by_name("character 3")
+    if not chosen:
+        await message.answer("Hedra Character 3 не найдена. Выполни /admin_models_sync и /admin_models.")
+        return
+    await message.answer(f"Выбрана Hedra Character 3:\n{chosen['name']}\n{chosen['id']}")
 
 
 @router.message(Command("admin_balance"))
