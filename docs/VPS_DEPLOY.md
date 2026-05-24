@@ -37,6 +37,16 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+Если Docker Hub вернул `429 Too Many Requests`, проект уже использует public ECR mirror для Python base image. После обновления кода выполни:
+
+```bash
+git pull
+docker compose build --no-cache
+docker compose up -d
+```
+
+Альтернатива: выполнить `docker login` на VPS под Docker Hub аккаунтом и повторить build.
+
 ## Operations
 ```bash
 docker compose ps

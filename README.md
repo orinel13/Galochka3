@@ -49,6 +49,8 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+Dockerfile использует public ECR mirror для Python base image, чтобы не зависеть от анонимного Docker Hub pull limit. Если сервер всё равно получил `429 Too Many Requests`, выполни `docker login` или повтори build позже.
+
 ## Systemd
 ```bash
 sudo cp systemd/galochka-hedra-bot.service /etc/systemd/system/
