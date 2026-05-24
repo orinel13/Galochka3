@@ -29,7 +29,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "/admin_users\n/admin_allow <telegram_id>\n/admin_deny <telegram_id>\n/admin_revoke <telegram_id>\n"
-        "/admin_voices\n/admin_hedra_voices\n/admin_voices_sync\n/admin_voices_sync_all\n/admin_voices_cleanup\n"
+        "/admin_voices\n/admin_hedra_voices [поиск]\n/admin_find_voice <name>\n/admin_import_voice_name <name>\n"
+        "/admin_voices_sync\n/admin_voices_sync_all\n/admin_voices_cleanup\n"
         "/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
         "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_set_video_model <model_id>\n"
@@ -137,15 +138,92 @@ async def admin_hedra_voices(message: Message, settings: Settings, hedra: HedraC
     if not voices:
         await message.answer("Hedra не вернула доступные голоса.")
         return
+    query = command_args(message).strip().lower()
+    if query:
+        voices = [voice for voice in voices if voice_matches(voice, query)]
+        if not voices:
+            await message.answer(
+                "Hedra API не вернул голос с таким именем.\n"
+                "Проверь, что HEDRA_API_KEY создан в том же аккаунте/workspace, где голос виден в браузере."
+            )
+            return
     chunks = []
-    for voice in voices[:40]:
+    for voice in voices:
         name = extract_voice_name(voice)
         voice_id = extract_voice_id(voice)
         description = str(voice.get("description") or "").strip()
         custom_mark = "custom" if is_custom_voice(voice) else "library"
         suffix = f"\n{description}" if description else ""
         chunks.append(f"{name}\n{voice_id or 'id не найден'}\n{custom_mark}{suffix}")
-    await send_long_text(message, "Голоса Hedra:\n\n" + "\n\n".join(chunks))
+    header = f"Голоса Hedra: {len(voices)}"
+    if query:
+        header += f"\nПоиск: {query}"
+    await send_long_text(message, header + "\n\n" + "\n\n".join(chunks))
+
+
+@router.message(Command("admin_find_voice"))
+async def admin_find_voice(message: Message, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    if not command_args(message).strip():
+        await message.answer("Формат: /admin_find_voice <name>")
+        return
+    await admin_hedra_voices(message, settings, hedra)
+
+
+@router.message(Command("admin_import_voice_name"))
+async def admin_import_voice_name(message: Message, db: Database, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    query = command_args(message).strip()
+    if not query:
+        await message.answer("Формат: /admin_import_voice_name <name>")
+        return
+    try:
+        voices = await hedra.list_voices()
+    except Exception as exc:
+        await message.answer(f"Не удалось получить голоса Hedra: {short_error(str(exc))}")
+        return
+    exact = [voice for voice in voices if extract_voice_name(voice).lower() == query.lower()]
+    matches = exact or [voice for voice in voices if voice_matches(voice, query.lower())]
+    if not matches:
+        await message.answer(
+            f"Голос '{query}' не найден в ответе Hedra API.\n"
+            "Если он виден в браузере, вероятно HEDRA_API_KEY создан не в том аккаунте/workspace "
+            "или public API не отдаёт этот тип голоса."
+        )
+        return
+    if len(matches) > 1 and not exact:
+        chunks = [
+            f"{extract_voice_name(voice)}\n{extract_voice_id(voice) or 'id не найден'}\n"
+            f"{'custom' if is_custom_voice(voice) else 'library'}"
+            for voice in matches[:20]
+        ]
+        await send_long_text(message, "Найдено несколько голосов. Уточни имя:\n\n" + "\n\n".join(chunks))
+        return
+    voice = matches[0]
+    voice_id = extract_voice_id(voice)
+    if not voice_id or not is_uuid(voice_id):
+        await message.answer("Hedra вернула голос без UUID, импорт невозможен.")
+        return
+    name = extract_voice_name(voice)
+    count = await db.fetchone("SELECT COUNT(*) AS c FROM voices")
+    is_default = 1 if count and count["c"] == 0 else 0
+    source = "hedra_api_custom" if is_custom_voice(voice) else "hedra_api_library"
+    await db.execute(
+        """
+        INSERT INTO voices (name, hedra_voice_id, source, is_active, is_default, notes, created_at, updated_at)
+        VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+        ON CONFLICT(hedra_voice_id) DO UPDATE SET
+          name=excluded.name,
+          source=excluded.source,
+          is_active=1,
+          notes=excluded.notes,
+          updated_at=excluded.updated_at
+        """,
+        (name, voice_id, source, is_default, voice_note(voice), now_iso(), now_iso()),
+    )
+    await message.answer(f"Голос импортирован: {name}\nvoice_id: {voice_id}")
 
 
 @router.message(Command("admin_voices_sync"))
@@ -518,6 +596,22 @@ def extract_voice_name(voice: dict) -> str:
             return str(value)
     voice_id = extract_voice_id(voice)
     return voice_id or "Без названия"
+
+
+def voice_matches(voice: dict, query: str) -> bool:
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            extract_voice_name(voice),
+            extract_voice_id(voice),
+            voice.get("description"),
+            voice.get("source"),
+            voice.get("provider"),
+            voice.get("category"),
+            voice.get("origin"),
+        )
+    ).lower()
+    return query.lower() in haystack
 
 
 def is_custom_voice(voice: dict) -> bool:

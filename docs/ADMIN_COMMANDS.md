@@ -6,7 +6,9 @@
 - `/admin_deny <telegram_id>` - отклонить заявку.
 - `/admin_revoke <telegram_id>` - отозвать доступ.
 - `/admin_voices` - список голосов.
-- `/admin_hedra_voices` - показать реальные voice IDs из Hedra.
+- `/admin_hedra_voices [поиск]` - показать реальные voice IDs из Hedra, можно фильтровать по имени.
+- `/admin_find_voice <name>` - найти голос по всему ответу Hedra API.
+- `/admin_import_voice_name <name>` - импортировать голос из Hedra API по имени.
 - `/admin_voices_sync` - импортировать только custom/user-created Hedra voices в локальную базу.
 - `/admin_voices_sync_all` - импортировать все доступные Hedra voices, включая библиотечные.
 - `/admin_voices_cleanup` - отключить не-UUID и библиотечные голоса, сбросить выбор пользователей.
