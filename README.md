@@ -167,12 +167,12 @@ Prompt передаётся в `generated_video_inputs.text_prompt` только
 Открой `🖼 Изображения` -> `Текст → изображение`, проверь image model, нажми `Продолжить` и отправь prompt.
 
 ## Редактирование изображения
-Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Image edit использует отдельный adapter: бот загружает изображение как Hedra asset, берёт `asset.url` из ответа upload текущей задачи и передаёт именно этот URL в Grok Imagine I2I payload. Recent assets из web UI не используются.
+Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Image edit использует отдельный adapter: бот загружает изображение как Hedra asset и для Grok Imagine I2I передаёт `reference_image_ids` с asset id текущей задачи. `asset.url` из upload response сохраняется для fallback/debug. Recent assets из web UI не используются.
 
 ## Почему модель есть в web UI Hedra, но может не работать в API
 Бот работает только через официальный Hedra API. Модели синхронизируются через `GET /models`, а payload для каждой модели может отличаться.
 
-`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` требует source image URL/data URI: бот сохраняет URL из upload response в `jobs.input_image_url`, при необходимости делает exact lookup по `asset_id`, а если URL получить нельзя, использует data URI текущего локального файла. Если Hedra кладёт результат только в `batch_results[].asset_id`, бот делает exact asset lookup и скачивает результат. Browser automation не используется.
+`Grok Video I2V` может требовать `generated_video_inputs.duration_ms`. `Grok Imagine I2I` использует `type="image_to_image"` и `reference_image_ids` текущего upload asset. Если Hedra требует image URL, бот повторяет запрос с URL из upload response или data URI текущего файла. Если Hedra кладёт результат только в `batch_results[].asset_id`, бот делает exact asset lookup и скачивает результат. Browser automation не используется.
 
 ## Web UI модель не видна в API
 Если модель или голос есть в Hedra web UI, но не приходит через public API (`/models`, `/voices`, `/assets`), бот не может использовать её официально. Browser automation Hedra Studio не используется.

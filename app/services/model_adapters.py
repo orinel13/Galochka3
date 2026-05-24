@@ -112,19 +112,14 @@ class HedraGrokImagineI2IAdapter(HedraImageEditAdapter):
         image_url: str | None = None,
         batch_size: int = 1,
     ) -> PreparedPayload:
-        source = "upload_response.asset.url"
-        if not image_url:
-            image_url = hedra_client.build_data_uri(local_image_path)
-            source = "data_uri_current_file"
         payload = {
-            "type": "image",
+            "type": "image_to_image",
             "text_prompt": text_prompt,
             "ai_model_id": model_id,
+            "reference_image_ids": [image_asset_id],
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
             "batch_size": batch_size,
-            "enhance_prompt": False,
-            "image_url": image_url,
         }
         return PreparedPayload(
             self.name,
@@ -132,7 +127,7 @@ class HedraGrokImagineI2IAdapter(HedraImageEditAdapter):
             list(payload.keys()),
             input_image_url=image_url,
             input_image_asset_id=image_asset_id,
-            input_image_source=source,
+            input_image_source="asset_id_current_job",
         )
 
 

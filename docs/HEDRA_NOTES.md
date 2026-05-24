@@ -70,13 +70,14 @@ Image edit включается только если `/models` показыва
 - входное изображение загружается как Hedra image asset;
 - `POST /assets/{id}/upload` возвращает JSON текущего upload, и бот берёт `asset.url` именно из этого ответа;
 - URL сохраняется в `jobs.input_image_url` вместе с `jobs.input_image_asset_id` и checksum исходного файла;
-- adapter получает только URL текущей задачи или data URI, построенный из текущего локального файла;
+- Grok Imagine I2I по умолчанию запускается как `type="image_to_image"` с `reference_image_ids` текущего upload asset;
+- adapter получает только asset id/URL текущей задачи или data URI, построенный из текущего локального файла;
 - бот не использует recent assets из Hedra web UI, не берёт первый asset из `/assets` и не подбирает картинку по имени;
 - если upload response не вернул URL, бот делает exact lookup только по тому же `asset_id`;
 - если upload/exact lookup не дали URL, adapter использует data URI текущего локального файла, чтобы не редактировать чужое изображение;
 - если Hedra отклоняет одно URL-поле, бот пробует ограниченный набор URL-полей с тем же самым source image.
 
-Grok Imagine I2I запускается через Hedra API с source image URL текущего upload asset. Бот не подключает xAI API напрямую и не автоматизирует web UI Hedra.
+Grok Imagine I2I запускается через Hedra API с `reference_image_ids` текущего upload asset. Если Hedra вернёт ошибку про missing image URL, бот повторит запрос с URL текущего upload asset или data URI текущего файла. Бот не подключает xAI API напрямую и не автоматизирует web UI Hedra.
 
 ## Image result delivery
 `GET /generations/{generation_id}/status` может вернуть `download_url`/`url` напрямую или только `asset_id`. Для batch responses `asset_id` может находиться в `batch_results[]`. Бот проверяет прямые ссылки, затем `asset_id`, затем exact asset lookup.

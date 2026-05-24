@@ -457,20 +457,28 @@ class JobManager:
                     raise RuntimeError("Внутренняя защита: adapter попытался использовать image URL не из текущей задачи.")
             if prepared.input_image_asset_id and prepared.input_image_asset_id != image_asset_id:
                 raise RuntimeError("Внутренняя защита: adapter попытался использовать image asset не из текущей задачи.")
-            stored_input_image_url = None if prepared.input_image_url and prepared.input_image_url.startswith("data:") else prepared.input_image_url
+            effective_input_image_url = prepared.input_image_url or image_url
+            stored_input_image_url = (
+                None
+                if effective_input_image_url and effective_input_image_url.startswith("data:")
+                else effective_input_image_url
+            )
             await self._update_job(
                 job_id,
                 input_image_asset_id=image_asset_id,
                 input_image_url=stored_input_image_url,
-                input_image_source=image_source,
+                input_image_source=prepared.input_image_source or image_source,
                 adapter_name=prepared.adapter_name,
                 request_payload_keys=json.dumps(prepared.payload_keys, ensure_ascii=False),
             )
             try:
                 generation = await self.hedra.generate_image_edit(prepared.payload)
             except HedraApiError as exc:
-                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url:
-                    generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, prepared.input_image_url, dict(model))
+                if _is_missing_image_url_error(str(exc)):
+                    fallback_url = prepared.input_image_url or image_url or self.hedra.build_data_uri(image_path)
+                    if fallback_url.startswith("data:"):
+                        await self._update_job(job_id, input_image_source="data_uri_current_file")
+                    generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, fallback_url, dict(model))
                 else:
                     logger.warning(
                         "Image edit failed model_id=%s model_name=%s generation_family=image_edit adapter=%s keys=%s asset_id=%s status=%s error=%s",

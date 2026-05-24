@@ -50,7 +50,7 @@ def test_try_get_asset_url_uses_exact_asset_id_only() -> None:
     asyncio.run(run())
 
 
-def test_grok_i2i_adapter_uses_current_job_image_url(tmp_path: Path) -> None:
+def test_grok_i2i_adapter_uses_current_job_asset_id(tmp_path: Path) -> None:
     async def run() -> None:
         image_path = tmp_path / "source.png"
         image_path.write_bytes(b"fake-image")
@@ -66,8 +66,10 @@ def test_grok_i2i_adapter_uses_current_job_image_url(tmp_path: Path) -> None:
             resolution="1080p",
         )
 
-        assert prepared.payload["image_url"] == "https://cdn.hedra/A.png"
-        assert "reference_image_ids" not in prepared.payload
+        assert prepared.payload["type"] == "image_to_image"
+        assert prepared.payload["reference_image_ids"] == ["asset-a"]
+        assert "image_url" not in prepared.payload
+        assert prepared.input_image_url == "https://cdn.hedra/A.png"
 
     asyncio.run(run())
 
@@ -121,10 +123,12 @@ def test_two_i2i_payloads_do_not_mix_urls(tmp_path: Path) -> None:
             resolution="1080p",
         )
 
-        assert payload_a.payload["image_url"] == "https://cdn.hedra/A.png"
-        assert payload_b.payload["image_url"] == "https://cdn.hedra/B.png"
-        assert "B.png" not in str(payload_a.payload)
-        assert "A.png" not in str(payload_b.payload)
+        assert payload_a.payload["reference_image_ids"] == ["asset-a"]
+        assert payload_b.payload["reference_image_ids"] == ["asset-b"]
+        assert payload_a.input_image_url == "https://cdn.hedra/A.png"
+        assert payload_b.input_image_url == "https://cdn.hedra/B.png"
+        assert "asset-b" not in str(payload_a.payload)
+        assert "asset-a" not in str(payload_b.payload)
 
     asyncio.run(run())
 
