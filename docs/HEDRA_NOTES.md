@@ -68,11 +68,14 @@ Image edit включается только если `/models` показыва
 Для image edit / I2I используется adapter layer:
 - text-to-image не смешивается с image edit;
 - входное изображение загружается как Hedra image asset;
-- adapter передаёт загруженный asset через `reference_image_ids` для I2I-моделей;
-- если модель явно требует URL, adapter дополнительно пытается получить usable image URL/reference image;
-- если модель требует image URL, но public API не отдаёт URL, бот не делает fake success и завершает job понятной ошибкой.
+- `POST /assets/{id}/upload` возвращает JSON текущего upload, и бот берёт `asset.url` именно из этого ответа;
+- URL сохраняется в `jobs.input_image_url` вместе с `jobs.input_image_asset_id` и checksum исходного файла;
+- adapter получает только URL текущей задачи или data URI, построенный из текущего локального файла;
+- бот не использует recent assets из Hedra web UI, не берёт первый asset из `/assets` и не подбирает картинку по имени;
+- если upload response не вернул URL, бот делает exact lookup только по тому же `asset_id`;
+- если модель требует image URL, но URL/data URI недоступны, job завершается ошибкой, чтобы не редактировать чужое изображение.
 
-Grok Imagine I2I запускается как `type="image_to_image"` с `reference_image_ids: ["<uploaded_asset_id>"]`. Это не то же самое, что локальный путь, Telegram `file_id` или произвольный URL.
+Grok Imagine I2I запускается через Hedra API с source image URL текущего upload asset. Бот не подключает xAI API напрямую и не автоматизирует web UI Hedra.
 
 ## Почему модель есть в web UI Hedra, но может не работать в API
 Бот работает только через официальный Hedra API:

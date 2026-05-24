@@ -22,6 +22,7 @@ class PreparedPayload:
     payload_keys: list[str]
     input_image_url: str | None = None
     input_image_asset_id: str | None = None
+    input_image_source: str | None = None
 
 
 class BaseModelAdapter:
@@ -72,9 +73,10 @@ class HedraImageEditAdapter(BaseModelAdapter):
         text_prompt: str,
         aspect_ratio: str,
         resolution: str,
+        image_url: str | None = None,
         batch_size: int = 1,
     ) -> PreparedPayload:
-        reference = await prepare_image_reference_for_edit(hedra_client, image_asset_id, local_image_path, self.model_raw_json)
+        reference = await prepare_image_reference_for_edit(image_asset_id, image_url, self.model_raw_json)
         payload = {
             "type": "image",
             "text_prompt": text_prompt,
@@ -90,6 +92,7 @@ class HedraImageEditAdapter(BaseModelAdapter):
             list(payload.keys()),
             input_image_url=reference.get("image_url"),
             input_image_asset_id=image_asset_id,
+            input_image_source=reference.get("source"),
         )
 
 
@@ -106,22 +109,30 @@ class HedraGrokImagineI2IAdapter(HedraImageEditAdapter):
         text_prompt: str,
         aspect_ratio: str,
         resolution: str,
+        image_url: str | None = None,
         batch_size: int = 1,
     ) -> PreparedPayload:
+        source = "upload_response.asset.url"
+        if not image_url:
+            image_url = hedra_client.build_data_uri(local_image_path)
+            source = "data_uri_current_file"
         payload = {
-            "type": "image_to_image",
+            "type": "image",
             "text_prompt": text_prompt,
             "ai_model_id": model_id,
-            "reference_image_ids": [image_asset_id],
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
             "batch_size": batch_size,
+            "enhance_prompt": False,
+            "image_url": image_url,
         }
         return PreparedPayload(
             self.name,
             payload,
             list(payload.keys()),
+            input_image_url=image_url,
             input_image_asset_id=image_asset_id,
+            input_image_source=source,
         )
 
 
@@ -149,29 +160,25 @@ def get_adapter_for_model(model_raw_json: dict[str, Any] | str | None, generatio
 
 
 async def prepare_image_reference_for_edit(
-    hedra_client: HedraClient,
     image_asset_id: str,
-    local_image_path: Path,
+    image_url: str | None,
     model_raw_json: dict[str, Any] | str | None,
 ) -> dict[str, Any]:
     raw = _loads_model(model_raw_json)
     raw_text = json.dumps(raw, ensure_ascii=False).lower()
-    if "reference_image_ids" in raw_text:
-        return {"payload": {"type": "image_to_image", "reference_image_ids": [image_asset_id]}, "image_url": None}
-    image_url = await hedra_client.try_get_asset_url(image_asset_id)
     if image_url:
         field = _preferred_image_url_field(raw_text)
         if field == "image_urls":
-            return {"payload": {"image_urls": [image_url]}, "image_url": image_url}
+            return {"payload": {"image_urls": [image_url]}, "image_url": image_url, "source": "upload_response.asset.url"}
         if field == "images":
-            return {"payload": {"images": [image_url]}, "image_url": image_url}
+            return {"payload": {"images": [{"url": image_url, "type": "image_url"}]}, "image_url": image_url, "source": "upload_response.asset.url"}
         if field == "reference_image_urls":
-            return {"payload": {"reference_image_urls": [image_url]}, "image_url": image_url}
-        return {"payload": {field: image_url}, "image_url": image_url}
+            return {"payload": {"reference_image_urls": [image_url]}, "image_url": image_url, "source": "upload_response.asset.url"}
+        return {"payload": {field: image_url}, "image_url": image_url, "source": "upload_response.asset.url"}
+    if "reference_image_ids" in raw_text:
+        return {"payload": {"type": "image_to_image", "reference_image_ids": [image_asset_id]}, "image_url": None, "source": "asset_id_current_job"}
     if any(marker in raw_text for marker in ("image_id", "image_asset_id")):
-        return {"payload": {"image_id": image_asset_id}, "image_url": None}
-    if "base64" in raw_text or "data uri" in raw_text or "data:" in raw_text:
-        return {"payload": {"image_url": hedra_client.build_data_uri(local_image_path)}, "image_url": None}
+        return {"payload": {"image_id": image_asset_id}, "image_url": None, "source": "asset_id_current_job"}
     raise ModelAdapterError(
         "Эта image model требует image URL/reference image, но текущий Hedra API не дал совместимый способ "
         "передать загруженное изображение. Попробуй другую image model."
@@ -195,8 +202,10 @@ def _preferred_image_url_field(raw_text: str) -> str:
 
 def fallback_image_url_payloads(image_url: str) -> list[dict[str, Any]]:
     return [
-        {"image_urls": [image_url]},
         {"image_url": image_url},
+        {"image_urls": [image_url]},
+        {"images": [{"url": image_url, "type": "image_url"}]},
+        {"image": {"url": image_url, "type": "image_url"}},
         {"reference_image_urls": [image_url]},
         {"source_image_url": image_url},
         {"input_image_url": image_url},

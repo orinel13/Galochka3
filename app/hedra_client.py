@@ -135,13 +135,14 @@ class HedraClient:
     async def upload_asset(self, asset_id: str, file_path: Path) -> dict[str, Any]:
         data = await self._request("POST", f"/assets/{asset_id}/upload", files={"file": file_path})
         result = data if isinstance(data, dict) else {"raw": data}
-        url = _find_url(result)
+        url = extract_asset_url(result)
         if url:
             self._asset_urls[asset_id] = url
         return result
 
     async def try_get_asset_url(self, asset_id: str) -> str | None:
         if asset_id in self._asset_urls:
+            logger.info("Resolved exact asset url asset_id=%s found=True source=upload_cache", asset_id)
             return self._asset_urls[asset_id]
         candidates: list[dict[str, Any]] = []
         try:
@@ -149,15 +150,22 @@ class HedraClient:
         except Exception:
             pass
         try:
-            candidates.extend(await self.list_assets("image"))
+            candidates.extend(await self.list_assets("image", ids=asset_id))
         except Exception:
             pass
-        for index, candidate in enumerate(candidates):
-            if str(candidate.get("id") or candidate.get("asset_id") or "") != asset_id and index != 0:
+        try:
+            candidates.extend(await self.list_assets(ids=asset_id))
+        except Exception:
+            pass
+        for candidate in candidates:
+            candidate_id = str(candidate.get("id") or candidate.get("asset_id") or "")
+            if candidate_id != str(asset_id):
                 continue
-            found = _find_url(candidate)
+            found = extract_asset_url(candidate)
             if found:
+                logger.info("Resolved exact asset url asset_id=%s found=True source=exact_lookup", asset_id)
                 return found
+        logger.info("Resolved exact asset url asset_id=%s found=False", asset_id)
         return None
 
     def build_data_uri(self, local_path: Path) -> str:
@@ -332,6 +340,28 @@ def _extract_list(data: Any) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def extract_asset_url(upload_response: dict[str, Any], allow_thumbnail: bool = False) -> str | None:
+    asset = upload_response.get("asset")
+    if isinstance(asset, dict):
+        url = _direct_url(asset, ("url", "download_url", "asset_url", "image_url"))
+        if url:
+            return url
+    url = _direct_url(upload_response, ("url", "download_url", "asset_url", "image_url"))
+    if url:
+        return url
+    if allow_thumbnail:
+        return _direct_url(upload_response, ("thumbnail_url",))
+    return None
+
+
+def _direct_url(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+    return None
 
 
 def _human_error(status: int, payload: Any, text: str) -> str:

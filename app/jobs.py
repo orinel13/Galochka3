@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +15,7 @@ from aiogram.types import FSInputFile
 from app.config import Settings
 from app.db import Database
 from app.files import FilesService
-from app.hedra_client import HedraApiError, HedraClient
+from app.hedra_client import HedraApiError, HedraClient, extract_asset_url
 from app.keyboards import audio_result_keyboard
 from app.models import AUDIO_JOB_TYPES, VIDEO_JOB_TYPES, JobStatus, JobType
 from app.services.credits_service import CreditsService
@@ -26,6 +28,14 @@ from app.ui_messages import send_tracked_message
 from app.utils import iso_after_hours, now_iso, short_error
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class UploadedAsset:
+    id: str
+    url: str | None
+    raw_create: dict[str, Any]
+    raw_upload: dict[str, Any]
 
 
 class JobManager:
@@ -90,9 +100,12 @@ class JobManager:
             "generation_family",
             "input_image_asset_id",
             "input_image_url",
+            "input_image_source",
+            "input_image_sha256",
             "adapter_name",
             "request_payload_keys",
             "hedra_error_raw",
+            "hedra_upload_raw",
         }
         columns = ["telegram_id", "job_type", "status", "expires_at", "created_at", "updated_at"]
         values: list[Any] = [telegram_id, job_type, JobStatus.QUEUED.value, iso_after_hours(self.settings.tmp_file_ttl_hours), now, now]
@@ -393,12 +406,27 @@ class JobManager:
             await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
-            image_asset_id = await self._upload_asset(job_id, image_path, "image", f"image_edit_{job_id}{image_path.suffix}")
+            image_sha256 = file_sha256(image_path)
+            uploaded = await self._upload_asset_full(job_id, image_path, "image", f"image_edit_{job_id}{image_path.suffix}")
+            image_asset_id = uploaded.id
+            image_url = uploaded.url
+            image_source = "upload_response.asset.url" if image_url else "missing"
+            if not image_url:
+                image_url = await self.hedra.try_get_asset_url(image_asset_id)
+                image_source = "exact_asset_lookup" if image_url else "missing"
+            await self._update_job(
+                job_id,
+                input_image_asset_id=image_asset_id,
+                input_image_url=image_url,
+                input_image_source=image_source,
+                input_image_sha256=image_sha256,
+            )
             adapter = get_adapter_for_model(model["raw_json"], "image_edit", model["name"])
             try:
                 prepared = await adapter.build(
                     hedra_client=self.hedra,
                     image_asset_id=image_asset_id,
+                    image_url=image_url,
                     local_image_path=image_path,
                     model_id=model_id,
                     text_prompt=prompt,
@@ -414,19 +442,34 @@ class JobManager:
                     hedra_error_raw=str(exc),
                 )
                 raise
+            if prepared.input_image_url and prepared.input_image_url != image_url:
+                if prepared.input_image_url.startswith("data:"):
+                    image_source = "data_uri_current_file"
+                    await self._update_job(job_id, input_image_source=image_source)
+                else:
+                    logger.error(
+                        "Image edit adapter attempted to use non-current image URL job_id=%s asset_id=%s prepared_url=%s job_url=%s",
+                        job_id,
+                        image_asset_id,
+                        _safe_url_for_log(prepared.input_image_url),
+                        _safe_url_for_log(image_url),
+                    )
+                    raise RuntimeError("Внутренняя защита: adapter попытался использовать image URL не из текущей задачи.")
+            if prepared.input_image_asset_id and prepared.input_image_asset_id != image_asset_id:
+                raise RuntimeError("Внутренняя защита: adapter попытался использовать image asset не из текущей задачи.")
+            stored_input_image_url = None if prepared.input_image_url and prepared.input_image_url.startswith("data:") else prepared.input_image_url
             await self._update_job(
                 job_id,
                 input_image_asset_id=image_asset_id,
-                input_image_url=prepared.input_image_url,
+                input_image_url=stored_input_image_url,
+                input_image_source=image_source,
                 adapter_name=prepared.adapter_name,
                 request_payload_keys=json.dumps(prepared.payload_keys, ensure_ascii=False),
             )
             try:
                 generation = await self.hedra.generate_image_edit(prepared.payload)
             except HedraApiError as exc:
-                if _is_missing_image_url_error(str(exc)) and prepared.input_image_asset_id:
-                    generation = await self._retry_i2i_with_reference_ids(job_id, prepared.payload, prepared.input_image_asset_id, dict(model))
-                elif _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
+                if _is_missing_image_url_error(str(exc)) and prepared.input_image_url and prepared.adapter_name == "hedra_grok_imagine_i2i":
                     generation = await self._retry_grok_i2i_with_url_fields(job_id, prepared.payload, prepared.input_image_url, dict(model))
                 else:
                     logger.warning(
@@ -555,13 +598,31 @@ class JobManager:
         raise TimeoutError("Генерация не успела завершиться за лимит времени.")
 
     async def _upload_asset(self, job_id: int, path: Path, asset_type: str, name: str) -> str:
+        return (await self._upload_asset_full(job_id, path, asset_type, name)).id
+
+    async def _upload_asset_full(self, job_id: int, path: Path, asset_type: str, name: str) -> UploadedAsset:
         asset = await self.hedra.create_asset(name, asset_type)
         asset_id = extract_id(asset)
         if not asset_id:
             raise RuntimeError(f"Hedra не вернула asset id для {asset_type}.")
-        await self.hedra.upload_asset(asset_id, path)
-        await self._update_job(job_id, hedra_asset_id=asset_id)
-        return asset_id
+        upload = await self.hedra.upload_asset(asset_id, path)
+        asset_url = extract_asset_url(upload)
+        fields: dict[str, Any] = {
+            "hedra_asset_id": asset_id,
+            "hedra_upload_raw": compact_error_payload(upload),
+        }
+        if asset_type == "image":
+            fields.update(
+                {
+                    "hedra_image_asset_id": asset_id,
+                    "input_image_asset_id": asset_id,
+                    "input_image_url": asset_url,
+                }
+            )
+        elif asset_type == "audio":
+            fields["hedra_audio_asset_id"] = asset_id
+        await self._update_job(job_id, **fields)
+        return UploadedAsset(asset_id, asset_url, asset, upload)
 
     async def _retry_grok_i2i_with_url_fields(
         self,
@@ -573,7 +634,7 @@ class JobManager:
         last_error: HedraApiError | None = None
         for extra in fallback_image_url_payloads(image_url):
             payload = dict(base_payload)
-            for key in ("image_url", "image_urls", "images", "reference_image_urls", "source_image_url", "input_image_url"):
+            for key in ("image_url", "image_urls", "images", "image", "reference_image_urls", "source_image_url", "input_image_url"):
                 payload.pop(key, None)
             payload.update(extra)
             await self._update_job(job_id, request_payload_keys=json.dumps(list(payload.keys()), ensure_ascii=False))
@@ -593,28 +654,6 @@ class JobManager:
             await self._update_job(job_id, hedra_error_raw=_error_raw(last_error))
             raise last_error
         raise RuntimeError("Не удалось подобрать payload для Grok Imagine I2I.")
-
-    async def _retry_i2i_with_reference_ids(
-        self,
-        job_id: int,
-        base_payload: dict[str, Any],
-        image_asset_id: str,
-        model: dict[str, Any],
-    ) -> dict[str, Any]:
-        payload = dict(base_payload)
-        for key in ("image_url", "image_urls", "images", "reference_image_urls", "source_image_url", "input_image_url", "image_id"):
-            payload.pop(key, None)
-        payload["type"] = "image_to_image"
-        payload["reference_image_ids"] = [image_asset_id]
-        await self._update_job(job_id, adapter_name="hedra_image_to_image_reference_ids", request_payload_keys=json.dumps(list(payload.keys()), ensure_ascii=False))
-        logger.info(
-            "Retry image edit with reference_image_ids model_id=%s model_name=%s keys=%s asset_id=%s",
-            model.get("id"),
-            model.get("name"),
-            list(payload.keys()),
-            image_asset_id,
-        )
-        return await self.hedra.generate_image_edit(payload)
 
     async def _source_audio_path(self, source: dict[str, Any], job_id: int) -> Path:
         local = source.get("local_result_path")
@@ -802,6 +841,22 @@ def compact_error_payload(payload: Any) -> str:
         return json.dumps(_redact_binary(payload), ensure_ascii=False)[:4000]
     except TypeError:
         return str(payload)[:4000]
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_url_for_log(url: str | None) -> str:
+    if not url:
+        return "-"
+    if url.startswith("data:"):
+        return "data-uri"
+    return url if len(url) <= 80 else f"{url[:35]}...{url[-12:]}"
 
 
 def _redact_binary(data: Any) -> Any:

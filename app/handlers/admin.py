@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
 from uuid import UUID
 
 from aiogram import Router
@@ -16,6 +17,7 @@ from app.jobs import JobManager
 from app.keyboards import video_models_keyboard
 from app.services.cleanup_service import CleanupService
 from app.services.credits_service import CreditsService
+from app.services.model_adapters import get_adapter_for_model
 from app.services.model_service import (
     ModelService,
     is_avatar_compatible,
@@ -46,6 +48,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/admin_model <model_id>\n/admin_test_model <model_id>\n"
         "/admin_set_omnia_model\n/admin_set_character3_model\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
+        "/admin_debug_asset <asset_id>\n/admin_debug_i2i_payload <job_id>\n"
         "/admin_cleanup\n/admin_export_db\n/admin_hedra_test"
     )
 
@@ -588,7 +591,7 @@ async def admin_test_model(message: Message, db: Database, settings: Settings) -
         return
     model = dict(row)
     image_payload = ["type", "text_prompt", "ai_model_id", "aspect_ratio", "resolution", "batch_size", "enhance_prompt"]
-    edit_payload = ["type=image_to_image", "text_prompt", "ai_model_id", "reference_image_ids", "aspect_ratio", "resolution", "batch_size"]
+    edit_payload = ["type=image", "text_prompt", "ai_model_id", "image_url", "aspect_ratio", "resolution", "batch_size"]
     if model.get("requires_image_url"):
         edit_payload.append("image_urls/image_url")
     elif model.get("supports_image_asset_id"):
@@ -681,6 +684,107 @@ async def admin_job(message: Message, db: Database, settings: Settings) -> None:
         return
     row = await db.fetchone("SELECT * FROM jobs WHERE id=?", (job_id,))
     await message.answer(format_job_admin(dict(row)) if row else "Задача не найдена.")
+
+
+@router.message(Command("admin_debug_asset"))
+async def admin_debug_asset(message: Message, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    asset_id = command_args(message).strip()
+    if not asset_id:
+        await message.answer("Формат: /admin_debug_asset <asset_id>")
+        return
+    url = await hedra.try_get_asset_url(asset_id)
+    asset: dict = {}
+    try:
+        asset = await hedra.get_asset(asset_id)
+    except Exception as exc:
+        asset = {"lookup_error": short_error(str(exc))}
+    await message.answer(
+        "Asset debug\n"
+        f"id={asset_id}\n"
+        f"exact_url_found={bool(url)}\n"
+        f"url={url or '-'}\n"
+        f"name={asset.get('name') or '-'}\n"
+        f"type={asset.get('type') or asset.get('asset_type') or '-'}\n"
+        f"created_at={asset.get('created_at') or asset.get('createdAt') or '-'}\n"
+        f"lookup_error={asset.get('lookup_error') or '-'}"
+    )
+
+
+@router.message(Command("admin_debug_i2i_payload"))
+async def admin_debug_i2i_payload(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    hedra: HedraClient,
+    files: FilesService,
+) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    job_id = parse_int_arg(message)
+    if not job_id:
+        await message.answer("Формат: /admin_debug_i2i_payload <job_id>")
+        return
+    row = await db.fetchone("SELECT * FROM jobs WHERE id=?", (job_id,))
+    if not row:
+        await message.answer("Задача не найдена.")
+        return
+    job = dict(row)
+    model_id = job.get("selected_model_id")
+    if not model_id:
+        await message.answer("У задачи нет selected_model_id.")
+        return
+    model_row = await db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+    if not model_row:
+        await message.answer("Модель задачи не найдена в hedra_models.")
+        return
+    model = dict(model_row)
+    image_asset_id = job.get("input_image_asset_id") or job.get("hedra_image_asset_id") or "debug-missing-asset"
+    image_url = job.get("input_image_url")
+    image_source = job.get("input_image_source") or ("upload_response.asset.url" if image_url else "missing")
+    local_image_path = None
+    if not image_url and job.get("image_file_id"):
+        try:
+            local_image_path = await files.download_image_file_id(job["image_file_id"], job_id)
+        except Exception:
+            local_image_path = None
+    if local_image_path is None:
+        local_image_path = settings.tmp_dir / f"debug_i2i_{job_id}.png"
+    adapter = get_adapter_for_model(model.get("raw_json"), "image_edit", model.get("name") or "")
+    try:
+        prepared = await adapter.build(
+            hedra_client=hedra,
+            image_asset_id=image_asset_id,
+            image_url=image_url,
+            local_image_path=local_image_path,
+            model_id=model_id,
+            text_prompt=job.get("text_prompt") or "debug prompt",
+            aspect_ratio=settings.default_image_aspect_ratio,
+            resolution=settings.default_image_resolution,
+        )
+    except Exception as exc:
+        await message.answer(
+            f"Payload debug failed\njob=#{job_id}\nmodel={model.get('name')}\n{model_id}\nerror={short_error(str(exc))}"
+        )
+        return
+    effective_url = prepared.input_image_url
+    if effective_url and effective_url.startswith("data:"):
+        image_source = "data_uri_current_file"
+        effective_url_label = "[data-uri-current-file]"
+    else:
+        effective_url_label = short_url_ref(effective_url)
+    await message.answer(
+        "I2I payload debug\n"
+        f"job=#{job_id}\n"
+        f"model={model.get('name')}\n{model_id}\n"
+        f"adapter={prepared.adapter_name}\n"
+        f"payload_keys={', '.join(prepared.payload_keys)}\n"
+        f"image_asset_id={image_asset_id}\n"
+        f"image_url={effective_url_label}\n"
+        f"image_url_source={image_source}\n"
+        f"input_sha256={job.get('input_image_sha256') or '-'}"
+    )
 
 
 @router.message(Command("admin_cancel_job"))
@@ -884,12 +988,29 @@ def format_job_admin(row: dict) -> str:
         f"source_audio={row.get('source_audio_job_id') or '-'}\n"
         f"model={row.get('selected_model_name') or row.get('selected_model_id') or '-'}\n"
         f"duration_ms={row.get('duration_ms') or '-'} adapter={row.get('adapter_name') or '-'}\n"
+        f"input_image_asset_id={row.get('input_image_asset_id') or '-'}\n"
+        f"input_image_url={short_url_ref(row.get('input_image_url'))}\n"
+        f"input_image_source={row.get('input_image_source') or '-'}\n"
+        f"input_image_sha256={row.get('input_image_sha256') or '-'}\n"
         f"payload_keys={row.get('request_payload_keys') or '-'}\n"
         f"error={row.get('error_message') or '-'}"
     )
     if row.get("hedra_error_raw"):
         text += f"\nhedra_error_raw={str(row['hedra_error_raw'])[:1500]}"
+    if row.get("hedra_upload_raw"):
+        text += f"\nhedra_upload_raw={str(row['hedra_upload_raw'])[:1000]}"
     return text
+
+
+def short_url_ref(url: str | None) -> str:
+    if not url:
+        return "-"
+    if url.startswith("data:"):
+        return "data-uri"
+    parsed = urlparse(url)
+    tail = url[-12:] if len(url) > 12 else url
+    domain = parsed.netloc or "-"
+    return f"{domain}/...{tail}" if len(url) > 60 else url
 
 
 def format_model_list(title: str, rows: list[dict]) -> str:
