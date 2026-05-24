@@ -19,6 +19,7 @@ from app.keyboards import (
     TEXT_PHOTO_TO_VIDEO,
     TEXT_TO_AUDIO,
     VOICE_MENU,
+    choose_voice_keyboard,
     job_history_keyboard,
     main_menu,
     voices_keyboard,
@@ -69,7 +70,10 @@ async def text_to_audio_text(message: Message, state: FSMContext, db: Database, 
         return
     voice = await selected_or_default_voice(db, message.from_user.id)
     if not voice:
-        await message.answer("Голос не выбран. Попроси администратора добавить голос или выбери /setvoice.")
+        await message.answer(
+            "Голос не выбран. Выбери голос из списка.",
+            reply_markup=choose_voice_keyboard(),
+        )
         return
     job_id = await jobs.create_job(
         telegram_id=message.from_user.id,
@@ -116,7 +120,10 @@ async def text_photo_video_text(message: Message, state: FSMContext, db: Databas
         return
     voice = await selected_or_default_voice(db, message.from_user.id)
     if not voice:
-        await message.answer("Голос не выбран. Попроси администратора добавить голос или выбери /setvoice.")
+        await message.answer(
+            "Голос не выбран. Выбери голос из списка.",
+            reply_markup=choose_voice_keyboard(),
+        )
         return
     data = await state.get_data()
     job_id = await jobs.create_job(
@@ -288,7 +295,12 @@ async def setvoice(event: Message | CallbackQuery, db: Database, settings: Setti
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("setvoice:"))
-async def setvoice_callback(callback: CallbackQuery, db: Database) -> None:
+async def setvoice_callback(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    user = callback.from_user
+    row_user = await db.get_user(user.id)
+    if user.id != settings.admin_telegram_id and not (row_user and row_user["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
     voice_id = callback.data.split(":", 1)[1]
     row = await db.fetchone("SELECT * FROM voices WHERE hedra_voice_id=? AND is_active=1", (voice_id,))
     if not row:

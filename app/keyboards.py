@@ -49,6 +49,14 @@ def audio_result_keyboard(job_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def choose_voice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Выбрать голос", callback_data="open_setvoice")],
+        ]
+    )
+
+
 def job_history_keyboard(job_id: int, job_type: str, has_local_file: bool) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
     if job_type == "tts":
