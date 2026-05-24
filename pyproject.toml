@@ -1,0 +1,18 @@
+[project]
+name = "galochka-hedra-bot"
+version = "0.1.0"
+description = "Telegram bot for Hedra-only TTS and avatar video generation"
+requires-python = ">=3.12"
+dependencies = [
+  "aiogram>=3.7,<4",
+  "aiohttp>=3.9,<4",
+  "aiosqlite>=0.20,<1",
+  "python-dotenv>=1.0,<2",
+]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

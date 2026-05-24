@@ -1,0 +1,24 @@
+# Admin Commands
+
+- `/admin` - список команд.
+- `/admin_users` - последние пользователи.
+- `/admin_allow <telegram_id>` - выдать доступ.
+- `/admin_deny <telegram_id>` - отклонить заявку.
+- `/admin_revoke <telegram_id>` - отозвать доступ.
+- `/admin_voices` - список голосов.
+- `/admin_add_voice <name> <hedra_voice_id>` - добавить существующий голос.
+- `/admin_disable_voice <hedra_voice_id>` - отключить голос.
+- `/admin_enable_voice <hedra_voice_id>` - включить голос.
+- `/admin_set_default_voice <hedra_voice_id>` - голос по умолчанию.
+- `/admin_clone_voice` - voice clone flow.
+- `/admin_clone_status` - последние clone jobs.
+- `/admin_models_sync` - синхронизировать Hedra models.
+- `/admin_models` - список локально сохранённых моделей.
+- `/admin_set_video_model <model_id>` - выбрать video model.
+- `/admin_balance` - баланс с записью snapshot.
+- `/admin_jobs` - последние задачи.
+- `/admin_job <job_id>` - детали задачи.
+- `/admin_cancel_job <job_id>` - отменить задачу.
+- `/admin_cleanup` - ручная TTL-очистка файлов.
+- `/admin_export_db` - отправить SQLite базу админу.
+- `/admin_hedra_test` - проверка key, credits, voices, models, defaults.

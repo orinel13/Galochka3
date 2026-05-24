@@ -1,0 +1,17 @@
+[Unit]
+Description=Galochka 3 Hedra Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/galochka-hedra-bot
+EnvironmentFile=/opt/galochka-hedra-bot/.env
+ExecStart=/opt/galochka-hedra-bot/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+User=galochka
+Group=galochka
+
+[Install]
+WantedBy=multi-user.target
