@@ -123,6 +123,52 @@ sudo journalctl -u galochka-hedra-bot -f
 /admin_set_character3_model
 ```
 
+## Динамическое меню
+Главное меню показывает только разделы: `🎙 Аудио`, `🎬 Видео`, `🖼 Изображения`, `🎭 Голос`, `⚙️ Настройки`, `📊 Баланс`, `🕘 Мои задачи`, `ℹ️ Помощь`.
+
+Внутри раздела открываются сценарии. Для генеративных сценариев бот показывает карточку параметров: голос, модель, aspect ratio, resolution и prompt. Дальше доступны кнопки `Продолжить`, `Изменить голос`, `Изменить модель`, `Изменить prompt`, `Назад`.
+
+## Выбор Hedra models
+Все модели берутся только из `GET /models`.
+
+Admin:
+```text
+/admin_models_sync
+/admin_models_avatar
+/admin_models_video
+/admin_models_image
+/admin_set_avatar_model <model_id>
+/admin_set_video_model <model_id>
+/admin_set_image_model <model_id>
+/admin_model <model_id>
+```
+
+User:
+- `🎬 Видео` -> `Выбрать avatar model` или `Выбрать video model`
+- `🖼 Изображения` -> `Выбрать image model`
+
+Preferred names вроде `Hedra Omnia`, `Hedra Character 3`, `Nano Banana Pro`, `Grok Imagine`, `Kling V3 Standard`, `Sora 2 Pro` используются только как удобные имена. Если модель не приходит из `/models`, бот её не вызывает.
+
+## Text prompt для avatar/video
+Для avatar/video сценариев бот спрашивает prompt:
+- `Пропустить`
+- `Написать prompt`
+- `Prompt по умолчанию`
+
+Prompt передаётся в `generated_video_inputs.text_prompt` только если он не пустой. Если API требует prompt и вернёт ошибку, image-to-video повторяется с fallback prompt.
+
+## Фото -> видео без аудио
+Открой `🎬 Видео` -> `Фото → видео без аудио`, проверь карточку параметров, нажми `Продолжить`, отправь фото и выбери prompt. Модель не должна требовать audio input.
+
+## Текст -> изображение
+Открой `🖼 Изображения` -> `Текст → изображение`, проверь image model, нажми `Продолжить` и отправь prompt.
+
+## Редактирование изображения
+Открой `🖼 Изображения` -> `Редактировать изображение`, отправь изображение и prompt редактирования. Если выбранная image model не показывает поддержку image edit/reference image в `/models`, бот честно вернёт ошибку, что режим недоступен через текущий public API.
+
+## Web UI модель не видна в API
+Если модель или голос есть в Hedra web UI, но не приходит через public API (`/models`, `/voices`, `/assets`), бот не может использовать её официально. Browser automation Hedra Studio не используется.
+
 ## Текст -> аудио -> видео
 1. Нажми `🎙 Текст → аудио`.
 2. Отправь текст.

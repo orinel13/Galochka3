@@ -35,7 +35,9 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/admin_voices_sync\n/admin_voices_sync_all\n/admin_voices_cleanup\n"
         "/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
-        "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_set_video_model <model_id>\n"
+        "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_models_image\n/admin_models_video\n/admin_models_avatar\n"
+        "/admin_set_avatar_model <model_id>\n/admin_set_video_model <model_id>\n/admin_set_image_model <model_id>\n"
+        "/admin_model <model_id>\n"
         "/admin_set_omnia_model\n/admin_set_character3_model\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
         "/admin_cleanup\n/admin_export_db\n/admin_hedra_test"
@@ -495,6 +497,30 @@ async def admin_models(message: Message, settings: Settings, models: ModelServic
     )
 
 
+@router.message(Command("admin_models_avatar"))
+async def admin_models_avatar(message: Message, settings: Settings, models: ModelService) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    rows = await models.compatible_avatar_models()
+    await send_long_text(message, format_model_list("Avatar models", rows))
+
+
+@router.message(Command("admin_models_video"))
+async def admin_models_video(message: Message, settings: Settings, models: ModelService) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    rows = await models.compatible_video_models()
+    await send_long_text(message, format_model_list("Video models", rows))
+
+
+@router.message(Command("admin_models_image"))
+async def admin_models_image(message: Message, settings: Settings, models: ModelService) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    rows = await models.compatible_image_models()
+    await send_long_text(message, format_model_list("Image models", rows))
+
+
 @router.message(Command("admin_set_video_model"))
 async def admin_set_video_model(message: Message, settings: Settings, models: ModelService) -> None:
     if not await ensure_admin(message, settings):
@@ -507,6 +533,39 @@ async def admin_set_video_model(message: Message, settings: Settings, models: Mo
         await message.answer(f"Video model выбрана: {model_id}")
     else:
         await message.answer("Модель не найдена. Выполни /admin_models_sync.")
+
+
+@router.message(Command("admin_set_avatar_model"))
+async def admin_set_avatar_model(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    await set_global_model_from_command(message, db, "avatar")
+
+
+@router.message(Command("admin_set_image_model"))
+async def admin_set_image_model(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    await set_global_model_from_command(message, db, "image")
+
+
+@router.message(Command("admin_model"))
+async def admin_model(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    model_id = command_args(message).strip()
+    if not model_id:
+        await message.answer("Формат: /admin_model <model_id>")
+        return
+    row = await db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+    if not row:
+        await message.answer("Модель не найдена.")
+        return
+    data = dict(row)
+    await send_long_text(
+        message,
+        format_model_list("Model", [data]) + "\n\nraw_json:\n" + compact_json(data.get("raw_json"), 2500),
+    )
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_video_model:"))
@@ -785,3 +844,34 @@ def format_job_admin(row: dict) -> str:
         f"source_audio={row.get('source_audio_job_id') or '-'}\n"
         f"error={row.get('error_message') or '-'}"
     )
+
+
+def format_model_list(title: str, rows: list[dict]) -> str:
+    if not rows:
+        return f"{title}: не найдены. Выполни /admin_models_sync."
+    chunks = []
+    for row in rows[:50]:
+        chunks.append(
+            f"{row['name']}\n{row['id']}\n"
+            f"type={row.get('type')} 1:1={row.get('supports_1_1')} 9:16={row.get('supports_9_16')} 16:9={row.get('supports_16_9')}\n"
+            f"540p={row.get('supports_540p')} 720p={row.get('supports_720p')} 1080p={row.get('supports_1080p')}\n"
+            f"premium={row.get('premium')} requires_audio={row.get('requires_audio_input')} start_frame={row.get('requires_start_frame')}"
+        )
+    return title + "\n\n" + "\n\n".join(chunks)
+
+
+async def set_global_model_from_command(message: Message, db: Database, family: str) -> None:
+    model_id = command_args(message).strip()
+    if not model_id:
+        await message.answer(f"Формат: /admin_set_{family}_model <model_id>")
+        return
+    row = await db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+    if not row:
+        await message.answer("Модель не найдена. Выполни /admin_models_sync.")
+        return
+    await db.set_setting(f"selected_{family}_model_id", row["id"])
+    await db.set_setting(f"selected_{family}_model_name", row["name"])
+    if family == "avatar":
+        await db.set_setting("selected_video_model_id", row["id"])
+        await db.set_setting("selected_video_model_name", row["name"])
+    await message.answer(f"Выбрана {family} model:\n{row['name']}\n{row['id']}")

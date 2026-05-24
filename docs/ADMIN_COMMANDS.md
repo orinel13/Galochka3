@@ -21,7 +21,13 @@
 - `/admin_clone_status` - последние clone jobs.
 - `/admin_models_sync` - синхронизировать Hedra models.
 - `/admin_models` - короткий список video/avatar моделей с кнопками выбора.
+- `/admin_models_avatar` - совместимые avatar/lip-sync модели.
+- `/admin_models_video` - совместимые image-to-video/video модели без обязательного audio input.
+- `/admin_models_image` - совместимые image модели.
+- `/admin_model <model_id>` - подробности и raw JSON модели.
 - `/admin_set_video_model <model_id>` - выбрать video model.
+- `/admin_set_avatar_model <model_id>` - выбрать avatar model.
+- `/admin_set_image_model <model_id>` - выбрать image model.
 - `/admin_set_omnia_model` - выбрать Hedra Omnia, если она есть в списке моделей.
 - `/admin_set_character3_model` - выбрать Hedra Character 3, если она есть в списке моделей.
 - `/admin_balance` - баланс с записью snapshot.

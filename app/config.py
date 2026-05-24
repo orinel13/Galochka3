@@ -41,6 +41,13 @@ class Settings:
     default_tts_speed: float
     default_video_aspect_ratio: str
     default_video_resolution: str
+    default_image_aspect_ratio: str
+    default_image_resolution: str
+    default_avatar_prompt: str
+    default_video_prompt: str
+    default_image_prompt: str
+    default_image_edit_prompt: str
+    default_video_no_audio_prompt: str
     max_text_chars_tts: int
     max_text_chars_video: int
     max_audio_file_mb: int
@@ -94,6 +101,16 @@ def load_settings(require_secrets: bool = True) -> Settings:
         default_tts_speed=_float("DEFAULT_TTS_SPEED", 1.0),
         default_video_aspect_ratio=os.getenv("DEFAULT_VIDEO_ASPECT_RATIO", "1:1"),
         default_video_resolution=os.getenv("DEFAULT_VIDEO_RESOLUTION", "540p"),
+        default_image_aspect_ratio=os.getenv("DEFAULT_IMAGE_ASPECT_RATIO", "1:1"),
+        default_image_resolution=os.getenv("DEFAULT_IMAGE_RESOLUTION", "1080p"),
+        default_avatar_prompt=os.getenv("DEFAULT_AVATAR_PROMPT", "A person speaking naturally to the camera with clear lip sync."),
+        default_video_prompt=os.getenv("DEFAULT_VIDEO_PROMPT", "A person looking natural on camera."),
+        default_image_prompt=os.getenv("DEFAULT_IMAGE_PROMPT", ""),
+        default_image_edit_prompt=os.getenv("DEFAULT_IMAGE_EDIT_PROMPT", ""),
+        default_video_no_audio_prompt=os.getenv(
+            "DEFAULT_VIDEO_NO_AUDIO_PROMPT",
+            "Subtle natural camera motion, realistic movement, stable identity, cinematic lighting.",
+        ),
         max_text_chars_tts=_int("MAX_TEXT_CHARS_TTS", 2500),
         max_text_chars_video=_int("MAX_TEXT_CHARS_VIDEO", 1200),
         max_audio_file_mb=_int("MAX_AUDIO_FILE_MB", 10),

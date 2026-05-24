@@ -12,21 +12,43 @@ from app.config import Settings
 from app.db import Database
 from app.jobs import JobManager
 from app.keyboards import (
+    AUDIO_SECTION,
     AUDIO_PHOTO_TO_VIDEO,
+    BACK,
     BALANCE,
+    GENERATED_AUDIO_TO_VIDEO,
     HELP,
+    IMAGE_EDIT,
+    IMAGE_SECTION,
+    IMAGE_TO_VIDEO,
     MY_JOBS,
+    SETTINGS_SECTION,
     TEXT_PHOTO_TO_VIDEO,
     TEXT_TO_AUDIO,
+    TEXT_TO_IMAGE,
+    VIDEO_SECTION,
     VOICE_MENU,
+    VOICE_CURRENT,
+    VOICE_LIST,
+    VOICE_SELECT,
+    audio_menu,
     choose_voice_keyboard,
+    image_menu,
     job_history_keyboard,
     main_menu,
+    options_keyboard,
+    prompt_choice_keyboard,
+    scenario_keyboard,
+    settings_menu,
+    user_models_keyboard,
+    video_menu,
+    voice_menu,
     voices_keyboard,
 )
 from app.models import JobType
 from app.services.credits_service import CreditsService
-from app.states import AudioPhotoVideoState, GeneratedAudioVideoState, TextPhotoVideoState, TextToAudioState
+from app.services.model_service import ModelService
+from app.states import AudioPhotoVideoState, GeneratedAudioVideoState, ImageEditState, ImageToVideoState, TextPhotoVideoState, TextToAudioState, TextToImageState
 from app.utils import now_iso, short_error
 
 router = Router()
@@ -39,14 +61,154 @@ async def help_message(message: Message, db: Database, settings: Settings) -> No
         return
     await message.answer(
         "Доступные действия:\n"
-        "🎙 Текст → аудио\n"
-        "🖼 Текст + фото → видео\n"
-        "🎧 Аудио + фото → видео\n"
+        "🎙 Аудио\n"
+        "🎬 Видео\n"
+        "🖼 Изображения\n"
         "🎭 Голос\n"
+        "⚙️ Настройки\n"
         "📊 Баланс\n"
         "🕘 Мои задачи",
         reply_markup=main_menu(),
     )
+
+
+@router.message(F.text == AUDIO_SECTION)
+async def open_audio_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Аудио-сценарии", reply_markup=audio_menu())
+
+
+@router.message(F.text == VIDEO_SECTION)
+async def open_video_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Видео-сценарии", reply_markup=video_menu())
+
+
+@router.message(F.text == IMAGE_SECTION)
+async def open_image_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Изображения", reply_markup=image_menu())
+
+
+@router.message(F.text == VOICE_MENU)
+async def open_voice_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Голос", reply_markup=voice_menu())
+
+
+@router.message(F.text == SETTINGS_SECTION)
+async def open_settings_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Настройки", reply_markup=settings_menu())
+
+
+@router.message(F.text == BACK)
+async def back_to_main(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await message.answer("Главное меню", reply_markup=main_menu())
+
+
+@router.message(F.text.in_({TEXT_PHOTO_TO_VIDEO, AUDIO_PHOTO_TO_VIDEO, IMAGE_TO_VIDEO, TEXT_TO_IMAGE, IMAGE_EDIT}))
+async def scenario_entry(message: Message, db: Database, settings: Settings, models: ModelService) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    scenario = {
+        TEXT_PHOTO_TO_VIDEO: "video_from_text",
+        AUDIO_PHOTO_TO_VIDEO: "video_from_uploaded_audio",
+        IMAGE_TO_VIDEO: "image_to_video",
+        TEXT_TO_IMAGE: "text_to_image",
+        IMAGE_EDIT: "image_edit",
+    }[message.text]
+    await show_scenario_card(message, db, settings, models, scenario)
+
+
+async def show_scenario_card(message: Message, db: Database, settings: Settings, models: ModelService, scenario: str) -> None:
+    tg_id = message.from_user.id
+    user_settings = await db.get_user_settings(tg_id)
+    voice = await selected_or_default_voice(db, tg_id)
+    family = "image" if scenario in {"text_to_image", "image_edit"} else ("video" if scenario == "image_to_video" else "avatar")
+    selected_model = await models.selected_model_for_user(tg_id, family)
+    if not selected_model:
+        compatible = await compatible_models_for_family(models, family, user_settings)
+        selected_model = compatible[0] if compatible else None
+    prompt = await default_prompt_for_scenario(settings, db, scenario)
+    title = {
+        "video_from_text": "Текст + фото → avatar video",
+        "video_from_uploaded_audio": "Аудио + фото → avatar video",
+        "image_to_video": "Фото → видео без аудио",
+        "text_to_image": "Текст → изображение",
+        "image_edit": "Редактировать изображение",
+    }[scenario]
+    text = (
+        f"Сценарий: {title}\n"
+        f"Голос: {(voice or {}).get('name') or 'не выбран'}\n"
+        f"{'Image' if family == 'image' else ('Video' if family == 'video' else 'Avatar')} model: {(selected_model or {}).get('name') or 'не выбрана'}\n"
+        f"Aspect ratio: {user_settings['image_aspect_ratio'] if family == 'image' else user_settings['video_aspect_ratio']}\n"
+        f"Resolution: {user_settings['image_resolution'] if family == 'image' else user_settings['video_resolution']}\n"
+        f"Prompt: {'по умолчанию' if prompt else 'не задан'}"
+    )
+    include_voice = scenario in {"video_from_text", "video_from_uploaded_audio"}
+    await message.answer(
+        text,
+        reply_markup=scenario_keyboard(scenario, include_voice=include_voice, include_model=True, include_prompt=scenario != "text_to_image"),
+    )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("scenario_continue:"))
+async def scenario_continue(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings, models: ModelService) -> None:
+    row = await db.get_user(callback.from_user.id)
+    if callback.from_user.id != settings.admin_telegram_id and not (row and row["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
+    scenario = callback.data.split(":", 1)[1]
+    if scenario in {"video_from_text", "video_from_uploaded_audio"} and not await selected_or_default_voice(db, callback.from_user.id):
+        await callback.message.answer("Сначала выбери голос.", reply_markup=choose_voice_keyboard())
+        await callback.answer()
+        return
+    if scenario == "video_from_text":
+        await state.set_state(TextPhotoVideoState.waiting_photo)
+        await state.update_data(prompt_mode="default", text_prompt=settings.default_avatar_prompt)
+        await callback.message.answer("Пришли фото для avatar video.")
+    elif scenario == "video_from_uploaded_audio":
+        await state.set_state(AudioPhotoVideoState.waiting_photo)
+        await state.update_data(prompt_mode="default", text_prompt=settings.default_avatar_prompt)
+        await callback.message.answer("Пришли фото для avatar video.")
+    elif scenario == "image_to_video":
+        await state.set_state(ImageToVideoState.waiting_photo)
+        await callback.message.answer("Пришли фото для видео без аудио.")
+    elif scenario == "text_to_image":
+        await state.set_state(TextToImageState.waiting_prompt)
+        await callback.message.answer("Опиши изображение, которое нужно сгенерировать.")
+    elif scenario == "image_edit":
+        await state.set_state(ImageEditState.waiting_image)
+        await callback.message.answer("Пришли изображение для редактирования.")
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("scenario_prompt:"))
+async def scenario_prompt(callback: CallbackQuery) -> None:
+    scenario = callback.data.split(":", 1)[1]
+    await callback.message.answer("Хочешь добавить текстовое описание движения/сцены?", reply_markup=prompt_choice_keyboard(scenario))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("scenario_model:"))
+async def scenario_model(callback: CallbackQuery, db: Database, settings: Settings, models: ModelService) -> None:
+    family = "image" if callback.data.endswith(("text_to_image", "image_edit")) else ("video" if callback.data.endswith("image_to_video") else "avatar")
+    await show_model_picker(callback.message, db, settings, models, callback.from_user.id, family)
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "scenario_back")
+async def scenario_back(callback: CallbackQuery) -> None:
+    await callback.message.answer("Главное меню", reply_markup=main_menu())
+    await callback.answer()
 
 
 @router.message(F.text == TEXT_TO_AUDIO)
@@ -125,17 +287,9 @@ async def text_photo_video_text(message: Message, state: FSMContext, db: Databas
             reply_markup=choose_voice_keyboard(),
         )
         return
-    data = await state.get_data()
-    job_id = await jobs.create_job(
-        telegram_id=message.from_user.id,
-        job_type=JobType.VIDEO_FROM_TEXT.value,
-        text=text,
-        voice_id=voice["hedra_voice_id"],
-        voice_name=voice["name"],
-        image_file_id=data["image_file_id"],
-    )
-    await state.clear()
-    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+    await state.update_data(text=text, voice_id=voice["hedra_voice_id"], voice_name=voice["name"])
+    await state.set_state(TextPhotoVideoState.waiting_prompt_choice)
+    await message.answer("Хочешь добавить текстовое описание движения/сцены?", reply_markup=prompt_choice_keyboard("video_from_text"))
 
 
 @router.message(F.text == AUDIO_PHOTO_TO_VIDEO)
@@ -167,15 +321,9 @@ async def audio_photo_video_audio(message: Message, state: FSMContext, db: Datab
     if not audio_file_id:
         await message.answer("Пришли аудио, voice или audio-документ mp3/wav/ogg.")
         return
-    data = await state.get_data()
-    job_id = await jobs.create_job(
-        telegram_id=message.from_user.id,
-        job_type=JobType.VIDEO_FROM_UPLOADED_AUDIO.value,
-        image_file_id=data["image_file_id"],
-        audio_file_id=audio_file_id,
-    )
-    await state.clear()
-    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+    await state.update_data(audio_file_id=audio_file_id)
+    await state.set_state(AudioPhotoVideoState.waiting_prompt_choice)
+    await message.answer("Хочешь добавить текстовое описание движения/сцены?", reply_markup=prompt_choice_keyboard("video_from_uploaded_audio"))
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("audio_to_video:"))
@@ -218,15 +366,237 @@ async def generated_audio_video_photo(message: Message, state: FSMContext, db: D
         return
     data = await state.get_data()
     source_job_id = int(data["source_audio_job_id"])
+    await state.update_data(source_image_file_id=file_id)
+    await state.set_state(GeneratedAudioVideoState.waiting_prompt_choice)
+    await message.answer("Хочешь добавить текстовое описание движения/сцены?", reply_markup=prompt_choice_keyboard("video_from_generated_audio"))
+
+
+async def create_generated_audio_video_job(message: Message, state: FSMContext, db: Database, jobs: JobManager, text_prompt: str | None, prompt_mode: str) -> None:
+    data = await state.get_data()
+    source_job_id = int(data["source_audio_job_id"])
     source = await db.fetchone("SELECT * FROM jobs WHERE id=?", (source_job_id,))
+    telegram_id = message.chat.id
+    model = await selected_model_for_job(db, telegram_id, "avatar")
     job_id = await jobs.create_job(
-        telegram_id=message.from_user.id,
+        telegram_id=telegram_id,
         job_type=JobType.VIDEO_FROM_GENERATED_AUDIO.value,
+        generation_family="avatar_video",
         parent_job_id=source_job_id,
         source_audio_job_id=source_job_id,
         voice_id=source["voice_id"] if source else None,
         voice_name=source["voice_name"] if source else None,
-        source_image_file_id=file_id,
+        source_image_file_id=data["source_image_file_id"],
+        text_prompt=text_prompt,
+        prompt_mode=prompt_mode,
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
+    )
+    await state.clear()
+    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+
+
+async def create_text_photo_video_job(message: Message, state: FSMContext, db: Database, jobs: JobManager, text_prompt: str | None, prompt_mode: str) -> None:
+    data = await state.get_data()
+    telegram_id = message.chat.id
+    model = await selected_model_for_job(db, telegram_id, "avatar")
+    job_id = await jobs.create_job(
+        telegram_id=telegram_id,
+        job_type=JobType.VIDEO_FROM_TEXT.value,
+        generation_family="avatar_video",
+        text=data["text"],
+        voice_id=data["voice_id"],
+        voice_name=data["voice_name"],
+        image_file_id=data["image_file_id"],
+        text_prompt=text_prompt,
+        prompt_mode=prompt_mode,
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
+    )
+    await state.clear()
+    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+
+
+async def create_uploaded_audio_video_job(message: Message, state: FSMContext, db: Database, jobs: JobManager, text_prompt: str | None, prompt_mode: str) -> None:
+    data = await state.get_data()
+    telegram_id = message.chat.id
+    model = await selected_model_for_job(db, telegram_id, "avatar")
+    job_id = await jobs.create_job(
+        telegram_id=telegram_id,
+        job_type=JobType.VIDEO_FROM_UPLOADED_AUDIO.value,
+        generation_family="avatar_video",
+        image_file_id=data["image_file_id"],
+        audio_file_id=data["audio_file_id"],
+        text_prompt=text_prompt,
+        prompt_mode=prompt_mode,
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
+    )
+    await state.clear()
+    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+
+
+async def create_image_to_video_job(message: Message, state: FSMContext, db: Database, jobs: JobManager, text_prompt: str | None, prompt_mode: str) -> None:
+    data = await state.get_data()
+    telegram_id = message.chat.id
+    model = await selected_model_for_job(db, telegram_id, "video")
+    job_id = await jobs.create_job(
+        telegram_id=telegram_id,
+        job_type=JobType.IMAGE_TO_VIDEO.value,
+        generation_family="image_to_video",
+        image_file_id=data["image_file_id"],
+        text_prompt=text_prompt,
+        prompt_mode=prompt_mode,
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
+    )
+    await state.clear()
+    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith(("prompt_skip:", "prompt_default:")))
+async def prompt_quick_choice(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    row = await db.get_user(callback.from_user.id)
+    if callback.from_user.id != settings.admin_telegram_id and not (row and row["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
+    action, scenario = callback.data.split(":", 1)
+    current = await state.get_state()
+    prompt: str | None = None
+    mode = "skip"
+    if action == "prompt_default":
+        mode = "default"
+        prompt = settings.default_video_no_audio_prompt if scenario == "image_to_video" else settings.default_avatar_prompt
+    if current == TextPhotoVideoState.waiting_prompt_choice.state:
+        await create_text_photo_video_job(callback.message, state, db, jobs, prompt, mode)
+    elif current == AudioPhotoVideoState.waiting_prompt_choice.state:
+        await create_uploaded_audio_video_job(callback.message, state, db, jobs, prompt, mode)
+    elif current == GeneratedAudioVideoState.waiting_prompt_choice.state:
+        await create_generated_audio_video_job(callback.message, state, db, jobs, prompt, mode)
+    elif current == ImageToVideoState.waiting_prompt_choice.state:
+        await create_image_to_video_job(callback.message, state, db, jobs, prompt, mode)
+    else:
+        await callback.message.answer("Сначала выбери сценарий и входные файлы.")
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("prompt_write:"))
+async def prompt_write(callback: CallbackQuery, state: FSMContext) -> None:
+    scenario = callback.data.split(":", 1)[1]
+    current = await state.get_state()
+    if current == TextPhotoVideoState.waiting_prompt_choice.state:
+        await state.set_state(TextPhotoVideoState.waiting_prompt_text)
+    elif current == AudioPhotoVideoState.waiting_prompt_choice.state:
+        await state.set_state(AudioPhotoVideoState.waiting_prompt_text)
+    elif current == GeneratedAudioVideoState.waiting_prompt_choice.state:
+        await state.set_state(GeneratedAudioVideoState.waiting_prompt_text)
+    elif current == ImageToVideoState.waiting_prompt_choice.state:
+        await state.set_state(ImageToVideoState.waiting_prompt_text)
+    else:
+        await callback.message.answer("Сначала выбери сценарий и входные файлы.")
+        await callback.answer()
+        return
+    await callback.message.answer("Напиши prompt одним сообщением.")
+    await callback.answer()
+
+
+@router.message(TextPhotoVideoState.waiting_prompt_text)
+async def text_photo_video_prompt_text(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await create_text_photo_video_job(message, state, db, jobs, (message.text or "").strip(), "custom")
+
+
+@router.message(AudioPhotoVideoState.waiting_prompt_text)
+async def uploaded_audio_video_prompt_text(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await create_uploaded_audio_video_job(message, state, db, jobs, (message.text or "").strip(), "custom")
+
+
+@router.message(GeneratedAudioVideoState.waiting_prompt_text)
+async def generated_audio_video_prompt_text(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await create_generated_audio_video_job(message, state, db, jobs, (message.text or "").strip(), "custom")
+
+
+@router.message(ImageToVideoState.waiting_photo)
+async def image_to_video_photo(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    file_id = get_image_file_id(message)
+    if not file_id:
+        await message.answer("Пришли фото JPG или PNG.")
+        return
+    await state.update_data(image_file_id=file_id)
+    await state.set_state(ImageToVideoState.waiting_prompt_choice)
+    await message.answer("Хочешь добавить текстовое описание движения/сцены?", reply_markup=prompt_choice_keyboard("image_to_video"))
+
+
+@router.message(ImageToVideoState.waiting_prompt_text)
+async def image_to_video_prompt_text(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    await create_image_to_video_job(message, state, db, jobs, (message.text or "").strip(), "custom")
+
+
+@router.message(TextToImageState.waiting_prompt)
+async def text_to_image_prompt(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    prompt = (message.text or "").strip()
+    if not prompt:
+        await message.answer("Prompt не должен быть пустым.")
+        return
+    model = await selected_model_for_job(db, message.from_user.id, "image")
+    job_id = await jobs.create_job(
+        telegram_id=message.from_user.id,
+        job_type=JobType.TEXT_TO_IMAGE.value,
+        generation_family="image_generation",
+        text_prompt=prompt,
+        prompt_mode="custom",
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
+    )
+    await state.clear()
+    await message.answer(f"Задача #{job_id} поставлена в очередь.")
+
+
+@router.message(ImageEditState.waiting_image)
+async def image_edit_image(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    file_id = get_image_file_id(message)
+    if not file_id:
+        await message.answer("Пришли фото JPG или PNG.")
+        return
+    await state.update_data(image_file_id=file_id)
+    await state.set_state(ImageEditState.waiting_prompt)
+    await message.answer(
+        "Напиши prompt редактирования.\n"
+        "Например: замени фон на студийный, сделай тёплый вечерний свет, сохрани лицо и позу."
+    )
+
+
+@router.message(ImageEditState.waiting_prompt)
+async def image_edit_prompt(message: Message, state: FSMContext, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    prompt = (message.text or "").strip()
+    if not prompt:
+        await message.answer("Prompt не должен быть пустым.")
+        return
+    data = await state.get_data()
+    model = await selected_model_for_job(db, message.from_user.id, "image")
+    job_id = await jobs.create_job(
+        telegram_id=message.from_user.id,
+        job_type=JobType.IMAGE_EDIT.value,
+        generation_family="image_edit",
+        image_file_id=data["image_file_id"],
+        text_prompt=prompt,
+        prompt_mode="custom",
+        selected_model_id=model["id"] if model else None,
+        selected_model_name=model["name"] if model else None,
     )
     await state.clear()
     await message.answer(f"Задача #{job_id} поставлена в очередь.")
@@ -262,7 +632,7 @@ async def delete_result(callback: CallbackQuery, db: Database, settings: Setting
 
 
 @router.message(Command("voices"))
-@router.message(F.text == VOICE_MENU)
+@router.message(F.text == VOICE_LIST)
 async def voices(message: Message, db: Database, settings: Settings) -> None:
     if not await ensure_allowed(message, db, settings):
         return
@@ -275,6 +645,7 @@ async def voices(message: Message, db: Database, settings: Settings) -> None:
 
 
 @router.message(Command("setvoice"))
+@router.message(F.text == VOICE_SELECT)
 @router.callback_query(lambda c: c.data == "open_setvoice")
 async def setvoice(event: Message | CallbackQuery, db: Database, settings: Settings) -> None:
     message = event.message if isinstance(event, CallbackQuery) else event
@@ -292,6 +663,14 @@ async def setvoice(event: Message | CallbackQuery, db: Database, settings: Setti
         await message.answer("Выбери голос:", reply_markup=voices_keyboard([dict(row) for row in rows]))
     if isinstance(event, CallbackQuery):
         await event.answer()
+
+
+@router.message(F.text == VOICE_CURRENT)
+async def current_voice(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    voice = await selected_or_default_voice(db, message.from_user.id)
+    await message.answer(f"Текущий голос: {voice['name']}" if voice else "Голос не выбран.", reply_markup=choose_voice_keyboard())
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("setvoice:"))
@@ -343,6 +722,115 @@ async def my_jobs(message: Message, db: Database, settings: Settings) -> None:
         await message.answer(text, reply_markup=job_history_keyboard(row["id"], row["job_type"], bool(row["local_result_path"])))
 
 
+@router.message(F.text.in_({"История аудио", GENERATED_AUDIO_TO_VIDEO}))
+async def audio_history(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    rows = await db.fetchall(
+        "SELECT * FROM jobs WHERE telegram_id=? AND job_type='tts' ORDER BY id DESC LIMIT 10",
+        (message.from_user.id,),
+    )
+    if not rows:
+        await message.answer("Готовых аудио-задач пока нет.")
+        return
+    for row in rows:
+        await message.answer(format_job(dict(row)), reply_markup=job_history_keyboard(row["id"], row["job_type"], bool(row["local_result_path"])))
+
+
+@router.message(F.text.in_({"Выбрать video model", "Выбрать avatar model", "Выбрать image model"}))
+async def choose_model_menu(message: Message, db: Database, settings: Settings, models: ModelService) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    family = "image" if "image" in message.text else ("avatar" if "avatar" in message.text else "video")
+    await show_model_picker(message, db, settings, models, message.from_user.id, family)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("user_model:"))
+async def user_model_callback(callback: CallbackQuery, db: Database, settings: Settings, models: ModelService) -> None:
+    row = await db.get_user(callback.from_user.id)
+    if callback.from_user.id != settings.admin_telegram_id and not (row and row["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
+    _, family, raw_index = callback.data.split(":", 2)
+    try:
+        index = int(raw_index)
+    except ValueError:
+        await callback.answer("Некорректная кнопка.", show_alert=True)
+        return
+    user_settings = await db.get_user_settings(callback.from_user.id)
+    compatible = await compatible_models_for_family(models, family, user_settings)
+    if index < 1 or index > len(compatible):
+        await callback.answer("Модель не найдена. Открой список заново.", show_alert=True)
+        return
+    model = compatible[index - 1]
+    await models.set_user_model(callback.from_user.id, family, model["id"])
+    await callback.message.answer(f"Выбрана модель:\n{model['name']}\n{model['id']}")
+    await callback.answer("Выбрано.")
+
+
+@router.message(F.text == "Текущие параметры")
+async def current_settings(message: Message, db: Database, settings: Settings, models: ModelService) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    user_settings = await db.get_user_settings(message.from_user.id)
+    voice = await selected_or_default_voice(db, message.from_user.id)
+    avatar = await models.selected_model_for_user(message.from_user.id, "avatar")
+    video = await models.selected_model_for_user(message.from_user.id, "video")
+    image = await models.selected_model_for_user(message.from_user.id, "image")
+    await message.answer(
+        "Текущие параметры\n"
+        f"Голос: {(voice or {}).get('name') or 'не выбран'}\n"
+        f"Avatar model: {(avatar or {}).get('name') or 'по умолчанию'}\n"
+        f"Video model: {(video or {}).get('name') or 'по умолчанию'}\n"
+        f"Image model: {(image or {}).get('name') or 'по умолчанию'}\n"
+        f"Video: {user_settings['video_aspect_ratio']} / {user_settings['video_resolution']}\n"
+        f"Image: {user_settings['image_aspect_ratio']} / {user_settings['image_resolution']}\n"
+        f"TTS: speed={user_settings['tts_speed']} stability={user_settings['tts_stability']}"
+    )
+
+
+@router.message(F.text == "Очистить временные результаты")
+async def cleanup_user_results(message: Message, db: Database, settings: Settings, jobs: JobManager) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    rows = await db.fetchall("SELECT id FROM jobs WHERE telegram_id=? AND local_result_path IS NOT NULL", (message.from_user.id,))
+    removed = 0
+    for row in rows:
+        if await jobs.delete_local_result(row["id"], message.from_user.id, False):
+            removed += 1
+    await message.answer(f"Локальные временные результаты удалены: {removed}")
+
+
+@router.message(F.text.in_({"Video aspect ratio", "Video resolution", "Image aspect ratio", "Image resolution", "TTS speed", "TTS stability"}))
+async def setting_option_menu(message: Message, db: Database, settings: Settings) -> None:
+    if not await ensure_allowed(message, db, settings):
+        return
+    options = {
+        "Video aspect ratio": ("video_aspect_ratio", ["1:1", "9:16", "16:9"]),
+        "Video resolution": ("video_resolution", ["540p", "720p", "1080p"]),
+        "Image aspect ratio": ("image_aspect_ratio", ["1:1", "9:16", "16:9"]),
+        "Image resolution": ("image_resolution", ["540p", "720p", "1080p"]),
+        "TTS speed": ("tts_speed", ["0.7", "0.85", "1.0", "1.1", "1.2"]),
+        "TTS stability": ("tts_stability", ["0.0", "0.25", "0.5", "0.75", "1.0"]),
+    }[message.text]
+    await message.answer(f"Выбери значение: {message.text}", reply_markup=options_keyboard(options[0], options[1]))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("option:"))
+async def setting_option_callback(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    row = await db.get_user(callback.from_user.id)
+    if callback.from_user.id != settings.admin_telegram_id and not (row and row["is_allowed"]):
+        await callback.answer("Доступ не выдан.", show_alert=True)
+        return
+    _, key, value = callback.data.split(":", 2)
+    if key in {"tts_speed", "tts_stability"}:
+        await db.update_user_settings(callback.from_user.id, **{key: float(value)})
+    else:
+        await db.update_user_settings(callback.from_user.id, **{key: value})
+    await callback.message.answer(f"Настройка обновлена: {key} = {value}")
+    await callback.answer("Готово.")
+
+
 def get_image_file_id(message: Message) -> str | None:
     if message.photo:
         return message.photo[-1].file_id
@@ -372,6 +860,61 @@ async def selected_or_default_voice(db: Database, telegram_id: int) -> dict | No
             return dict(row)
     row = await db.fetchone("SELECT * FROM voices WHERE is_active=1 AND is_default=1 ORDER BY id LIMIT 1")
     return dict(row) if row else None
+
+
+async def compatible_models_for_family(models: ModelService, family: str, user_settings) -> list[dict]:
+    if family == "avatar":
+        return await models.compatible_avatar_models(user_settings["video_aspect_ratio"], user_settings["video_resolution"])
+    if family == "video":
+        return await models.compatible_video_models(user_settings["video_aspect_ratio"], user_settings["video_resolution"])
+    return await models.compatible_image_models(user_settings["image_aspect_ratio"], user_settings["image_resolution"])
+
+
+async def show_model_picker(message: Message, db: Database, settings: Settings, models: ModelService, telegram_id: int, family: str) -> None:
+    user_settings = await db.get_user_settings(telegram_id)
+    compatible = await compatible_models_for_family(models, family, user_settings)
+    selected = await models.selected_model_for_user(telegram_id, family)
+    if not compatible:
+        await message.answer(
+            "Совместимые модели не найдены. Попроси админа выполнить /admin_models_sync.\n"
+            "Если модель есть в web-интерфейсе Hedra, но не приходит через /models, бот не может использовать её официально."
+        )
+        return
+    label = {"avatar": "avatar", "video": "video", "image": "image"}[family]
+    lines = []
+    for model in compatible[:12]:
+        price = f" credits={model.get('credit_cost')}" if model.get("credit_cost") is not None else ""
+        premium = " premium" if model.get("premium") else ""
+        lines.append(f"{model['name']}\ntype={model.get('type')} {premium}{price}")
+    await message.answer(
+        f"Выбери {label} model:\n\n" + "\n\n".join(lines),
+        reply_markup=user_models_keyboard(family, compatible[:12], (selected or {}).get("id")),
+    )
+
+
+async def selected_model_for_job(db: Database, telegram_id: int, family: str) -> dict | None:
+    settings_row = await db.get_user_settings(telegram_id)
+    model_id = settings_row[f"selected_{family}_model_id"]
+    if not model_id:
+        model_id = await db.get_setting(f"selected_{family}_model_id")
+    if not model_id and family == "avatar":
+        model_id = await db.get_setting("selected_video_model_id")
+    if not model_id:
+        return None
+    row = await db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+    return dict(row) if row else None
+
+
+async def default_prompt_for_scenario(settings: Settings, db: Database, scenario: str) -> str:
+    if scenario == "image_to_video":
+        return await db.get_setting("default_video_no_audio_prompt") or settings.default_video_no_audio_prompt
+    if scenario in {"video_from_text", "video_from_uploaded_audio", "video_from_generated_audio"}:
+        return await db.get_setting("default_avatar_prompt") or settings.default_avatar_prompt
+    if scenario == "text_to_image":
+        return await db.get_setting("default_image_prompt") or settings.default_image_prompt
+    if scenario == "image_edit":
+        return await db.get_setting("default_image_edit_prompt") or settings.default_image_edit_prompt
+    return ""
 
 
 def format_job(job: dict) -> str:

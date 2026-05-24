@@ -144,7 +144,11 @@ class HedraClient:
         model_id: str,
         aspect_ratio: str,
         resolution: str,
+        text_prompt: str | None = None,
     ) -> dict[str, Any]:
+        inputs = {"aspect_ratio": aspect_ratio, "resolution": resolution}
+        if text_prompt:
+            inputs["text_prompt"] = text_prompt
         return await self._request(
             "POST",
             "/generations",
@@ -153,11 +157,7 @@ class HedraClient:
                 "ai_model_id": model_id,
                 "start_keyframe_id": image_asset_id,
                 "audio_id": audio_asset_id,
-                "generated_video_inputs": {
-                    "text_prompt": VIDEO_PROMPT,
-                    "aspect_ratio": aspect_ratio,
-                    "resolution": resolution,
-                },
+                "generated_video_inputs": inputs,
             },
         )
 
@@ -172,7 +172,11 @@ class HedraClient:
         stability: float,
         speed: float,
         language: str,
+        text_prompt: str | None = None,
     ) -> dict[str, Any]:
+        inputs = {"aspect_ratio": aspect_ratio, "resolution": resolution}
+        if text_prompt:
+            inputs["text_prompt"] = text_prompt
         return await self._request(
             "POST",
             "/generations",
@@ -188,11 +192,78 @@ class HedraClient:
                     "speed": speed,
                     "language": language,
                 },
-                "generated_video_inputs": {
-                    "text_prompt": VIDEO_PROMPT,
-                    "aspect_ratio": aspect_ratio,
-                    "resolution": resolution,
-                },
+                "generated_video_inputs": inputs,
+            },
+        )
+
+    async def generate_video_from_image(
+        self,
+        image_asset_id: str,
+        text_prompt: str | None,
+        model_id: str,
+        aspect_ratio: str,
+        resolution: str,
+        duration_ms: int | None = None,
+    ) -> dict[str, Any]:
+        inputs: dict[str, Any] = {"aspect_ratio": aspect_ratio, "resolution": resolution}
+        if text_prompt:
+            inputs["text_prompt"] = text_prompt
+        if duration_ms:
+            inputs["duration_ms"] = duration_ms
+        return await self._request(
+            "POST",
+            "/generations",
+            json={
+                "type": "video",
+                "ai_model_id": model_id,
+                "start_keyframe_id": image_asset_id,
+                "generated_video_inputs": inputs,
+            },
+        )
+
+    async def generate_image(
+        self,
+        text_prompt: str,
+        model_id: str,
+        aspect_ratio: str,
+        resolution: str,
+        batch_size: int = 1,
+        enhance_prompt: bool = False,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/generations",
+            json={
+                "type": "image",
+                "text_prompt": text_prompt,
+                "ai_model_id": model_id,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
+                "batch_size": batch_size,
+                "enhance_prompt": enhance_prompt,
+            },
+        )
+
+    async def generate_image_edit(
+        self,
+        image_asset_id: str,
+        text_prompt: str,
+        model_id: str,
+        aspect_ratio: str,
+        resolution: str,
+        batch_size: int = 1,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/generations",
+            json={
+                "type": "image",
+                "text_prompt": text_prompt,
+                "ai_model_id": model_id,
+                "image_id": image_asset_id,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
+                "batch_size": batch_size,
             },
         )
 
@@ -224,7 +295,7 @@ def _extract_list(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("data", "items", "voices", "models", "results"):
+        for key in ("data", "items", "voices", "models", "assets", "results"):
             value = data.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]

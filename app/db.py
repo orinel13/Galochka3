@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   voice_id TEXT,
   voice_name TEXT,
   text TEXT,
+  text_prompt TEXT,
+  prompt_mode TEXT,
+  selected_model_id TEXT,
+  selected_model_name TEXT,
+  generation_family TEXT,
   image_file_id TEXT,
   audio_file_id TEXT,
   source_image_file_id TEXT,
@@ -92,12 +97,43 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS hedra_models (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  description TEXT,
   type TEXT,
   supports_1_1 INTEGER DEFAULT 0,
+  supports_9_16 INTEGER DEFAULT 0,
+  supports_16_9 INTEGER DEFAULT 0,
   supports_540p INTEGER DEFAULT 0,
   supports_720p INTEGER DEFAULT 0,
+  supports_1080p INTEGER DEFAULT 0,
+  supports_1440p INTEGER DEFAULT 0,
+  supports_2160p INTEGER DEFAULT 0,
+  requires_start_frame INTEGER DEFAULT 0,
+  requires_end_frame INTEGER DEFAULT 0,
+  requires_audio_input INTEGER DEFAULT 0,
+  requires_input_video INTEGER DEFAULT 0,
   max_duration_ms INTEGER,
+  billing_unit TEXT,
+  credit_cost INTEGER,
+  credits_per_second REAL,
+  premium INTEGER DEFAULT 0,
   raw_json TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+  telegram_id INTEGER PRIMARY KEY,
+  selected_avatar_model_id TEXT,
+  selected_avatar_model_name TEXT,
+  selected_video_model_id TEXT,
+  selected_video_model_name TEXT,
+  selected_image_model_id TEXT,
+  selected_image_model_name TEXT,
+  video_aspect_ratio TEXT DEFAULT '1:1',
+  video_resolution TEXT DEFAULT '540p',
+  image_aspect_ratio TEXT DEFAULT '1:1',
+  image_resolution TEXT DEFAULT '1080p',
+  tts_speed REAL DEFAULT 1.0,
+  tts_stability REAL DEFAULT 0.5,
   updated_at TEXT NOT NULL
 );
 
@@ -148,6 +184,7 @@ class Database:
     async def init_schema(self) -> None:
         await self._conn().executescript(SCHEMA_SQL)
         await self._conn().commit()
+        await self._run_lightweight_migrations()
 
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> aiosqlite.Cursor:
         cursor = await self._conn().execute(sql, tuple(params))
@@ -289,6 +326,63 @@ class Database:
             "INSERT INTO credit_snapshots (remaining, expiring, used, raw_json, created_at) VALUES (?, ?, ?, ?, ?)",
             (remaining, expiring, used, json.dumps(data, ensure_ascii=False), now_iso()),
         )
+
+    async def get_user_settings(self, telegram_id: int) -> aiosqlite.Row:
+        row = await self.fetchone("SELECT * FROM user_settings WHERE telegram_id=?", (telegram_id,))
+        if row:
+            return row
+        await self.execute(
+            "INSERT INTO user_settings (telegram_id, updated_at) VALUES (?, ?)",
+            (telegram_id, now_iso()),
+        )
+        row = await self.fetchone("SELECT * FROM user_settings WHERE telegram_id=?", (telegram_id,))
+        if row is None:
+            raise RuntimeError("Failed to create user_settings")
+        return row
+
+    async def update_user_settings(self, telegram_id: int, **fields: Any) -> None:
+        await self.get_user_settings(telegram_id)
+        fields["updated_at"] = now_iso()
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        await self.execute(f"UPDATE user_settings SET {assignments} WHERE telegram_id=?", [*fields.values(), telegram_id])
+
+    async def _run_lightweight_migrations(self) -> None:
+        await self._ensure_columns(
+            "jobs",
+            {
+                "text_prompt": "TEXT",
+                "prompt_mode": "TEXT",
+                "selected_model_id": "TEXT",
+                "selected_model_name": "TEXT",
+                "generation_family": "TEXT",
+            },
+        )
+        await self._ensure_columns(
+            "hedra_models",
+            {
+                "description": "TEXT",
+                "supports_9_16": "INTEGER DEFAULT 0",
+                "supports_16_9": "INTEGER DEFAULT 0",
+                "supports_1080p": "INTEGER DEFAULT 0",
+                "supports_1440p": "INTEGER DEFAULT 0",
+                "supports_2160p": "INTEGER DEFAULT 0",
+                "requires_start_frame": "INTEGER DEFAULT 0",
+                "requires_end_frame": "INTEGER DEFAULT 0",
+                "requires_audio_input": "INTEGER DEFAULT 0",
+                "requires_input_video": "INTEGER DEFAULT 0",
+                "billing_unit": "TEXT",
+                "credit_cost": "INTEGER",
+                "credits_per_second": "REAL",
+                "premium": "INTEGER DEFAULT 0",
+            },
+        )
+
+    async def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        existing_rows = await self.fetchall(f"PRAGMA table_info({table})")
+        existing = {row["name"] for row in existing_rows}
+        for name, definition in columns.items():
+            if name not in existing:
+                await self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def _to_int(value: Any) -> int | None:

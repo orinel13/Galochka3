@@ -21,31 +21,63 @@ class ModelService:
             if not model_id:
                 continue
             name = str(model.get("name") or model.get("display_name") or model_id)
+            description = str(model.get("description") or model.get("summary") or "")
             model_type = model.get("type") or model.get("model_type") or ""
             raw = json.dumps(model, ensure_ascii=False)
             await self.db.execute(
                 """
                 INSERT INTO hedra_models
-                  (id, name, type, supports_1_1, supports_540p, supports_720p, max_duration_ms, raw_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (id, name, description, type, supports_1_1, supports_9_16, supports_16_9,
+                   supports_540p, supports_720p, supports_1080p, supports_1440p, supports_2160p,
+                   requires_start_frame, requires_end_frame, requires_audio_input, requires_input_video,
+                   max_duration_ms, billing_unit, credit_cost, credits_per_second, premium, raw_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   name=excluded.name,
+                  description=excluded.description,
                   type=excluded.type,
                   supports_1_1=excluded.supports_1_1,
+                  supports_9_16=excluded.supports_9_16,
+                  supports_16_9=excluded.supports_16_9,
                   supports_540p=excluded.supports_540p,
                   supports_720p=excluded.supports_720p,
+                  supports_1080p=excluded.supports_1080p,
+                  supports_1440p=excluded.supports_1440p,
+                  supports_2160p=excluded.supports_2160p,
+                  requires_start_frame=excluded.requires_start_frame,
+                  requires_end_frame=excluded.requires_end_frame,
+                  requires_audio_input=excluded.requires_audio_input,
+                  requires_input_video=excluded.requires_input_video,
                   max_duration_ms=excluded.max_duration_ms,
+                  billing_unit=excluded.billing_unit,
+                  credit_cost=excluded.credit_cost,
+                  credits_per_second=excluded.credits_per_second,
+                  premium=excluded.premium,
                   raw_json=excluded.raw_json,
                   updated_at=excluded.updated_at
                 """,
                 (
                     model_id,
                     name,
+                    description,
                     str(model_type) if model_type is not None else None,
                     int(_contains_1_1(model)),
+                    int(_contains_text(model, "9:16") or _contains_text(model, "9x16")),
+                    int(_contains_text(model, "16:9") or _contains_text(model, "16x9")),
                     int(_contains_text(model, "540p")),
                     int(_contains_text(model, "720p")),
+                    int(_contains_text(model, "1080p")),
+                    int(_contains_text(model, "1440p")),
+                    int(_contains_text(model, "2160p") or _contains_text(model, "4k")),
+                    int(_truthy(model, "requires_start_frame", "requiresStartFrame", "start_frame_required")),
+                    int(_truthy(model, "requires_end_frame", "requiresEndFrame", "end_frame_required")),
+                    int(_truthy(model, "requires_audio_input", "requiresAudioInput", "audio_required")),
+                    int(_truthy(model, "requires_input_video", "requiresInputVideo", "input_video_required")),
                     _max_duration(model),
+                    _billing_unit(model),
+                    _credit_cost(model),
+                    _credits_per_second(model),
+                    int(_truthy(model, "premium", "is_premium", "paid")),
                     raw,
                     now,
                 ),
@@ -65,11 +97,32 @@ class ModelService:
         fallback = [model for model in models if _is_video(model)]
         return sorted(fallback, key=_model_sort_key)
 
+    async def compatible_avatar_models(self, aspect_ratio: str = "1:1", resolution: str = "540p") -> list[dict[str, Any]]:
+        return [
+            model for model in await self.list_avatar_video_models()
+            if is_avatar_compatible(model, aspect_ratio, resolution)
+        ]
+
+    async def compatible_video_models(self, aspect_ratio: str = "1:1", resolution: str = "540p") -> list[dict[str, Any]]:
+        models = await self.list_models()
+        return sorted(
+            [model for model in models if is_image_to_video_compatible(model, aspect_ratio, resolution)],
+            key=_model_sort_key,
+        )
+
+    async def compatible_image_models(self, aspect_ratio: str = "1:1", resolution: str = "1080p") -> list[dict[str, Any]]:
+        models = await self.list_models()
+        return sorted(
+            [model for model in models if is_image_model(model, aspect_ratio, resolution)],
+            key=_model_sort_key,
+        )
+
     async def set_video_model(self, model_id: str) -> bool:
-        row = await self.db.fetchone("SELECT id FROM hedra_models WHERE id=?", (model_id,))
+        row = await self.db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
         if not row:
             return False
         await self.db.set_setting("selected_video_model_id", model_id)
+        await self.db.set_setting("selected_video_model_name", row["name"])
         return True
 
     async def set_preferred_by_name(self, preferred: str) -> dict[str, Any] | None:
@@ -98,7 +151,36 @@ class ModelService:
         row = await self.db.fetchone("SELECT id FROM hedra_models WHERE id=?", (value,))
         return value if row else None
 
+    async def selected_model_for_user(self, telegram_id: int, family: str) -> dict[str, Any] | None:
+        user_settings = await self.db.get_user_settings(telegram_id)
+        id_key = f"selected_{family}_model_id"
+        model_id = user_settings[id_key] if id_key in user_settings.keys() else None
+        if not model_id:
+            model_id = await self.db.get_setting(id_key)
+        if not model_id:
+            return None
+        row = await self.db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+        return dict(row) if row else None
+
+    async def set_user_model(self, telegram_id: int, family: str, model_id: str) -> bool:
+        row = await self.db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
+        if not row:
+            return False
+        await self.db.update_user_settings(
+            telegram_id,
+            **{
+                f"selected_{family}_model_id": row["id"],
+                f"selected_{family}_model_name": row["name"],
+            },
+        )
+        return True
+
     async def choose_default_avatar_model(self) -> str | None:
+        avatar_selected = await self.db.get_setting("selected_avatar_model_id")
+        if avatar_selected:
+            row = await self.db.fetchone("SELECT id FROM hedra_models WHERE id=?", (avatar_selected,))
+            if row:
+                return avatar_selected
         selected = await self.selected_video_model_id()
         if selected:
             return selected
@@ -115,6 +197,15 @@ class ModelService:
             if _is_video(model) and ("1:1" in raw or "avatar" in raw or "character" in raw):
                 return model["id"]
         return None
+
+    async def choose_default_image_model(self) -> str | None:
+        selected = await self.db.get_setting("selected_image_model_id")
+        if selected:
+            row = await self.db.fetchone("SELECT id FROM hedra_models WHERE id=?", (selected,))
+            if row:
+                return selected
+        rows = await self.compatible_image_models()
+        return rows[0]["id"] if rows else None
 
 
 def _contains_text(model: dict[str, Any], needle: str) -> bool:
@@ -137,9 +228,89 @@ def _max_duration(model: dict[str, Any]) -> int | None:
     return None
 
 
+def _truthy(model: dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = model.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value > 0
+        if isinstance(value, str) and value.lower() in {"true", "yes", "required"}:
+            return True
+    text = json.dumps(model, ensure_ascii=False).lower()
+    return any(key.lower() in text and "true" in text for key in keys)
+
+
+def _billing_unit(model: dict[str, Any]) -> str | None:
+    for key in ("billing_unit", "billingUnit", "unit"):
+        if model.get(key):
+            return str(model[key])
+    return None
+
+
+def _credit_cost(model: dict[str, Any]) -> int | None:
+    for key in ("credit_cost", "creditCost", "credits", "cost"):
+        try:
+            if model.get(key) is not None:
+                return int(model[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _credits_per_second(model: dict[str, Any]) -> float | None:
+    for key in ("credits_per_second", "creditsPerSecond"):
+        try:
+            if model.get(key) is not None:
+                return float(model[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _is_video(model: dict[str, Any]) -> bool:
     text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or ''}".lower()
     return "video" in text or "avatar" in text or "character" in text
+
+
+def _supports_aspect(model: dict[str, Any], aspect_ratio: str) -> bool:
+    if aspect_ratio == "1:1":
+        return bool(model.get("supports_1_1")) or _contains_1_1(model)
+    if aspect_ratio == "9:16":
+        return bool(model.get("supports_9_16")) or _contains_text(model, "9:16") or _contains_text(model, "9x16")
+    if aspect_ratio == "16:9":
+        return bool(model.get("supports_16_9")) or _contains_text(model, "16:9") or _contains_text(model, "16x9")
+    return True
+
+
+def _supports_resolution(model: dict[str, Any], resolution: str) -> bool:
+    key = f"supports_{resolution}".replace("p", "p")
+    return bool(model.get(key)) or _contains_text(model, resolution)
+
+
+def is_avatar_compatible(model: dict[str, Any], aspect_ratio: str = "1:1", resolution: str = "540p") -> bool:
+    text = f"{model.get('name') or ''} {model.get('type') or ''} {model.get('raw_json') or ''}".lower()
+    return _is_video(model) and _supports_aspect(model, aspect_ratio) and (
+        "avatar" in text or "character" in text or "lip" in text or "audio" in text or "omnia" in text
+    )
+
+
+def is_image_to_video_compatible(model: dict[str, Any], aspect_ratio: str = "1:1", resolution: str = "540p") -> bool:
+    if not _is_video(model) or model.get("requires_audio_input"):
+        return False
+    return _supports_aspect(model, aspect_ratio) and (_supports_resolution(model, resolution) or resolution == "540p")
+
+
+def is_image_model(model: dict[str, Any], aspect_ratio: str = "1:1", resolution: str = "1080p") -> bool:
+    text = f"{model.get('type') or ''} {model.get('name') or ''} {model.get('raw_json') or ''}".lower()
+    if "image" not in text and "imagine" not in text and "banana" not in text:
+        return False
+    return _supports_aspect(model, aspect_ratio) or not any(model.get(k) for k in ("supports_1_1", "supports_9_16", "supports_16_9"))
+
+
+def supports_image_edit(model: dict[str, Any]) -> bool:
+    text = f"{model.get('name') or ''} {model.get('description') or ''} {model.get('raw_json') or ''}".lower()
+    return any(marker in text for marker in ("image edit", "edit image", "reference image", "image-to-image", "input_image", "image_id"))
 
 
 def _is_recommended_avatar_model(model: dict[str, Any]) -> bool:
