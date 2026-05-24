@@ -41,6 +41,7 @@ class HedraClient:
         json: dict[str, Any] | None = None,
         data: Any | None = None,
         files: dict[str, Path] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         headers = {"X-API-Key": self.api_key}
@@ -57,7 +58,7 @@ class HedraClient:
                         handles.append(handle)
                         form.add_field(key, handle, filename=file_path.name)
                     body = form
-                async with self.session.request(method, url, headers=headers, json=json, data=body) as response:
+                async with self.session.request(method, url, headers=headers, json=json, data=body, params=params) as response:
                     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
                     text = await response.text()
                     payload = _loads(text)
@@ -100,6 +101,11 @@ class HedraClient:
 
     async def list_models(self) -> list[dict[str, Any]]:
         data = await self._request("GET", "/models")
+        return _extract_list(data)
+
+    async def list_assets(self, asset_type: str | None = None) -> list[dict[str, Any]]:
+        params = {"type": asset_type} if asset_type else None
+        data = await self._request("GET", "/assets", params=params)
         return _extract_list(data)
 
     async def create_asset(self, name: str, asset_type: str) -> dict[str, Any]:

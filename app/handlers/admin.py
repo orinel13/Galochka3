@@ -29,7 +29,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "/admin_users\n/admin_allow <telegram_id>\n/admin_deny <telegram_id>\n/admin_revoke <telegram_id>\n"
-        "/admin_voices\n/admin_hedra_voices [поиск]\n/admin_find_voice <name>\n/admin_import_voice_name <name>\n"
+        "/admin_voices\n/admin_hedra_voices [поиск]\n/admin_hedra_voice_assets [поиск]\n"
+        "/admin_find_voice <name>\n/admin_import_voice_name <name>\n"
         "/admin_voices_sync\n/admin_voices_sync_all\n/admin_voices_cleanup\n"
         "/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
@@ -165,10 +166,26 @@ async def admin_hedra_voices(message: Message, settings: Settings, hedra: HedraC
 async def admin_find_voice(message: Message, settings: Settings, hedra: HedraClient) -> None:
     if not await ensure_admin(message, settings):
         return
-    if not command_args(message).strip():
+    query = command_args(message).strip()
+    if not query:
         await message.answer("Формат: /admin_find_voice <name>")
         return
-    await admin_hedra_voices(message, settings, hedra)
+    voices, voice_assets = await load_voice_sources(hedra)
+    matches = [("voices", voice) for voice in voices if voice_matches(voice, query.lower())]
+    matches += [("assets?type=voice", voice) for voice in voice_assets if voice_matches(voice, query.lower())]
+    if not matches:
+        await message.answer(
+            f"Голос '{query}' не найден ни в /voices, ни в /assets?type=voice.\n"
+            "Если он виден в браузере, public API key сейчас не имеет доступа к этому voice asset "
+            "или UI хранит этот ElevenLabs V3 голос вне public API."
+        )
+        return
+    chunks = [
+        f"{source}\n{extract_voice_name(voice)}\n{extract_voice_id(voice) or 'id не найден'}\n"
+        f"{'custom' if is_custom_voice(voice) else 'library'}\n{voice_note(voice) or '-'}"
+        for source, voice in matches
+    ]
+    await send_long_text(message, f"Найдено: {len(matches)}\n\n" + "\n\n".join(chunks))
 
 
 @router.message(Command("admin_import_voice_name"))
@@ -180,12 +197,13 @@ async def admin_import_voice_name(message: Message, db: Database, settings: Sett
         await message.answer("Формат: /admin_import_voice_name <name>")
         return
     try:
-        voices = await hedra.list_voices()
+        voices, voice_assets = await load_voice_sources(hedra)
     except Exception as exc:
         await message.answer(f"Не удалось получить голоса Hedra: {short_error(str(exc))}")
         return
-    exact = [voice for voice in voices if extract_voice_name(voice).lower() == query.lower()]
-    matches = exact or [voice for voice in voices if voice_matches(voice, query.lower())]
+    all_voices = [*voices, *voice_assets]
+    exact = [voice for voice in all_voices if extract_voice_name(voice).lower() == query.lower()]
+    matches = exact or [voice for voice in all_voices if voice_matches(voice, query.lower())]
     if not matches:
         await message.answer(
             f"Голос '{query}' не найден в ответе Hedra API.\n"
@@ -224,6 +242,30 @@ async def admin_import_voice_name(message: Message, db: Database, settings: Sett
         (name, voice_id, source, is_default, voice_note(voice), now_iso(), now_iso()),
     )
     await message.answer(f"Голос импортирован: {name}\nvoice_id: {voice_id}")
+
+
+@router.message(Command("admin_hedra_voice_assets"))
+async def admin_hedra_voice_assets(message: Message, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    query = command_args(message).strip().lower()
+    try:
+        assets = await hedra.list_assets("voice")
+    except Exception as exc:
+        await message.answer(f"Не удалось получить /assets?type=voice: {short_error(str(exc))}")
+        return
+    if query:
+        assets = [asset for asset in assets if voice_matches(asset, query)]
+    if not assets:
+        await message.answer("Voice assets не найдены.")
+        return
+    chunks = []
+    for asset in assets:
+        chunks.append(
+            f"{extract_voice_name(asset)}\n{extract_voice_id(asset) or 'id не найден'}\n"
+            f"{'custom' if is_custom_voice(asset) else 'library'}\n{voice_note(asset) or '-'}"
+        )
+    await send_long_text(message, f"Voice assets: {len(assets)}\n\n" + "\n\n".join(chunks))
 
 
 @router.message(Command("admin_voices_sync"))
@@ -598,6 +640,15 @@ def extract_voice_name(voice: dict) -> str:
     return voice_id or "Без названия"
 
 
+async def load_voice_sources(hedra: HedraClient) -> tuple[list[dict], list[dict]]:
+    voices = await hedra.list_voices()
+    try:
+        voice_assets = await hedra.list_assets("voice")
+    except Exception:
+        voice_assets = []
+    return voices, voice_assets
+
+
 def voice_matches(voice: dict, query: str) -> bool:
     haystack = " ".join(
         str(value or "")
@@ -609,6 +660,7 @@ def voice_matches(voice: dict, query: str) -> bool:
             voice.get("provider"),
             voice.get("category"),
             voice.get("origin"),
+            voice.get("type"),
         )
     ).lower()
     return query.lower() in haystack

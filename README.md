@@ -79,6 +79,12 @@ sudo journalctl -u galochka-hedra-bot -f
 /admin_import_voice_name Miroslavka
 ```
 
+Если поиск ничего не нашёл, проверь voice assets напрямую:
+
+```text
+/admin_hedra_voice_assets Miroslavka
+```
+
 Чтобы импортировать доступные голоса автоматически:
 
 ```text
