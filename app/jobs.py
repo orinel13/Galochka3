@@ -481,9 +481,12 @@ class JobManager:
             raise RuntimeError("Hedra не вернула generation id.")
         await self._update_job(job_id, status=JobStatus.SUBMITTED.value, hedra_generation_id=generation_id)
         status = await self._poll_generation(job_id, generation_id, job["telegram_id"])
-        url = extract_download_url(status)
+        url, status = await self._resolve_generation_result_url(job_id, generation_id, status, "image")
         if not url:
-            raise RuntimeError("Hedra не вернула ссылку на изображение.")
+            raw = compact_error_payload(status)
+            await self._update_job(job_id, hedra_error_raw=raw)
+            logger.warning("Hedra image generation completed without URL job_id=%s generation_id=%s status=%s", job_id, generation_id, raw)
+            raise RuntimeError("Hedra завершила генерацию, но не вернула ссылку на изображение. Администратор может посмотреть status JSON через /admin_job.")
         await self._update_job(job_id, status=JobStatus.DOWNLOADING.value)
         result_path = self.settings.tmp_dir / f"job_{job_id}_image.png"
         await self.hedra.download_file(url, result_path)
@@ -498,6 +501,35 @@ class JobManager:
         )
         await self.bot.send_photo(job["telegram_id"], FSInputFile(result_path), caption=f"Задача #{job_id} готова.")
 
+    async def _resolve_generation_result_url(
+        self,
+        job_id: int,
+        generation_id: str,
+        initial_status: dict[str, Any],
+        asset_type: str,
+    ) -> tuple[str | None, dict[str, Any]]:
+        status = initial_status
+        for attempt in range(6):
+            url = extract_download_url(status)
+            if url:
+                return url, status
+            asset_id = extract_result_asset_id(status, asset_type)
+            if asset_id:
+                asset_url = await self.hedra.try_get_asset_url(asset_id)
+                if asset_url:
+                    if asset_type == "image":
+                        await self._update_job(job_id, hedra_image_asset_id=asset_id)
+                    elif asset_type == "audio":
+                        await self._update_job(job_id, hedra_audio_asset_id=asset_id)
+                    return asset_url, status
+            if attempt < 5:
+                await asyncio.sleep(min(self.settings.job_poll_interval_sec, 5))
+                status = await self.hedra.get_generation_status(generation_id)
+                current = str(status.get("status") or status.get("state") or "").lower()
+                if current in {"error", "failed", "failure", "cancelled"}:
+                    raise RuntimeError(str(status.get("error_message") or status.get("error") or status.get("message") or "Hedra вернула ошибку генерации."))
+        return None, status
+
     async def _poll_generation(self, job_id: int, generation_id: str, telegram_id: int) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + self.settings.job_timeout_sec
         last_notice = 0.0
@@ -509,10 +541,10 @@ class JobManager:
                 raise RuntimeError("Задача отменена.")
             last = await self.hedra.get_generation_status(generation_id)
             status = str(last.get("status") or last.get("state") or "").lower()
-            if status in {"complete", "completed", "succeeded", "success", "done"}:
+            if status in {"complete", "completed"}:
                 return last
             if status in {"error", "failed", "failure", "cancelled"}:
-                raise RuntimeError(str(last.get("error") or last.get("message") or "Hedra вернула ошибку генерации."))
+                raise RuntimeError(str(last.get("error_message") or last.get("error") or last.get("message") or "Hedra вернула ошибку генерации."))
             now = asyncio.get_running_loop().time()
             if now - last_notice >= 30:
                 last_notice = now
@@ -659,7 +691,7 @@ class JobManager:
 
 
 def extract_download_url(data: dict[str, Any]) -> str | None:
-    for key in ("download_url", "result_download_url", "url", "result_url"):
+    for key in ("download_url", "url", "result_download_url", "result_url"):
         value = data.get(key)
         if value:
             return str(value)
@@ -698,6 +730,42 @@ def extract_audio_asset_id(data: dict[str, Any]) -> str | None:
             if found:
                 return found
     return None
+
+
+def extract_result_asset_id(data: dict[str, Any], asset_type: str | None = None) -> str | None:
+    preferred_keys = (
+        "asset_id",
+        "result_asset_id",
+        "image_asset_id",
+        "image_id",
+        "audio_asset_id",
+        "audio_id",
+        "id",
+    )
+    for key in preferred_keys:
+        value = data.get(key)
+        if value and (key != "id" or _looks_like_asset_container(data, asset_type)):
+            return str(value)
+    for key in ("asset", "result", "data", "output", "image", "audio", "video"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            found = extract_result_asset_id(nested, asset_type)
+            if found:
+                return found
+        if isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    found = extract_result_asset_id(item, asset_type)
+                    if found:
+                        return found
+    return None
+
+
+def _looks_like_asset_container(data: dict[str, Any], asset_type: str | None) -> bool:
+    if not asset_type:
+        return True
+    text = " ".join(str(data.get(key) or "") for key in ("type", "asset_type", "mime_type", "content_type", "name")).lower()
+    return asset_type in text or not text
 
 
 def extract_allowed_duration_values(error_text: str) -> list[int]:
