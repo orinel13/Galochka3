@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -27,7 +29,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "/admin_users\n/admin_allow <telegram_id>\n/admin_deny <telegram_id>\n/admin_revoke <telegram_id>\n"
-        "/admin_voices\n/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
+        "/admin_voices\n/admin_hedra_voices\n/admin_voices_sync\n/admin_add_voice <name> <hedra_voice_id>\n/admin_disable_voice <hedra_voice_id>\n"
         "/admin_enable_voice <hedra_voice_id>\n/admin_set_default_voice <hedra_voice_id>\n/admin_clone_voice\n"
         "/admin_clone_status\n/admin_models_sync\n/admin_models\n/admin_set_video_model <model_id>\n"
         "/admin_balance\n/admin_jobs\n/admin_job <job_id>\n/admin_cancel_job <job_id>\n"
@@ -103,6 +105,12 @@ async def admin_add_voice(message: Message, db: Database, settings: Settings) ->
         await message.answer("Формат: /admin_add_voice <name> <hedra_voice_id>")
         return
     name, voice_id = parts[0].strip(), parts[1].strip()
+    if not is_uuid(voice_id):
+        await message.answer(
+            "Это не Hedra voice_id. Hedra ждёт UUID вида xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.\n"
+            "Выполни /admin_hedra_voices, скопируй реальный id и добавь его."
+        )
+        return
     count = await db.fetchone("SELECT COUNT(*) AS c FROM voices")
     is_default = 1 if count and count["c"] == 0 else 0
     await db.execute(
@@ -114,6 +122,61 @@ async def admin_add_voice(message: Message, db: Database, settings: Settings) ->
         (name, voice_id, is_default, now_iso(), now_iso()),
     )
     await message.answer(f"Голос добавлен: {name}\nvoice_id: {voice_id}")
+
+
+@router.message(Command("admin_hedra_voices"))
+async def admin_hedra_voices(message: Message, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    try:
+        voices = await hedra.list_voices()
+    except Exception as exc:
+        await message.answer(f"Не удалось получить голоса Hedra: {short_error(str(exc))}")
+        return
+    if not voices:
+        await message.answer("Hedra не вернула доступные голоса.")
+        return
+    chunks = []
+    for voice in voices[:40]:
+        name = extract_voice_name(voice)
+        voice_id = extract_voice_id(voice)
+        chunks.append(f"{name}\n{voice_id or 'id не найден'}")
+    await message.answer("Голоса Hedra:\n\n" + "\n\n".join(chunks))
+
+
+@router.message(Command("admin_voices_sync"))
+async def admin_voices_sync(message: Message, db: Database, settings: Settings, hedra: HedraClient) -> None:
+    if not await ensure_admin(message, settings):
+        return
+    try:
+        voices = await hedra.list_voices()
+    except Exception as exc:
+        await message.answer(f"Не удалось получить голоса Hedra: {short_error(str(exc))}")
+        return
+    imported = 0
+    skipped = 0
+    for voice in voices:
+        voice_id = extract_voice_id(voice)
+        if not voice_id or not is_uuid(voice_id):
+            skipped += 1
+            continue
+        name = extract_voice_name(voice)
+        count = await db.fetchone("SELECT COUNT(*) AS c FROM voices")
+        is_default = 1 if count and count["c"] == 0 else 0
+        await db.execute(
+            """
+            INSERT INTO voices (name, hedra_voice_id, source, is_active, is_default, created_at, updated_at)
+            VALUES (?, ?, 'hedra_api', 1, ?, ?, ?)
+            ON CONFLICT(hedra_voice_id) DO UPDATE SET
+              name=excluded.name,
+              source=excluded.source,
+              is_active=1,
+              updated_at=excluded.updated_at
+            """,
+            (name, voice_id, is_default, now_iso(), now_iso()),
+        )
+        imported += 1
+    await message.answer(f"Голоса синхронизированы: {imported}. Пропущено без UUID: {skipped}.")
 
 
 @router.message(Command("admin_disable_voice"))
@@ -147,6 +210,13 @@ async def admin_set_default_voice(message: Message, db: Database, settings: Sett
     voice_id = command_args(message).strip()
     if not voice_id:
         await message.answer("Формат: /admin_set_default_voice <hedra_voice_id>")
+        return
+    if not is_uuid(voice_id):
+        await message.answer("Это не Hedra voice_id UUID. Выполни /admin_hedra_voices и скопируй реальный id.")
+        return
+    row = await db.fetchone("SELECT hedra_voice_id FROM voices WHERE hedra_voice_id=?", (voice_id,))
+    if not row:
+        await message.answer("Голос не найден в базе. Сначала добавь его через /admin_add_voice или /admin_voices_sync.")
         return
     await db.execute("UPDATE voices SET is_default=0")
     await db.execute("UPDATE voices SET is_default=1, is_active=1, updated_at=? WHERE hedra_voice_id=?", (now_iso(), voice_id))
@@ -357,6 +427,34 @@ def parse_int_arg(message: Message) -> int | None:
         return int(command_args(message).split()[0])
     except (ValueError, IndexError):
         return None
+
+
+def is_uuid(value: str) -> bool:
+    try:
+        UUID(value.removeprefix("urn:uuid:"))
+        return True
+    except ValueError:
+        return False
+
+
+def extract_voice_id(voice: dict) -> str | None:
+    for key in ("id", "voice_id", "hedra_voice_id", "uuid"):
+        value = voice.get(key)
+        if value:
+            return str(value)
+    nested = voice.get("voice")
+    if isinstance(nested, dict):
+        return extract_voice_id(nested)
+    return None
+
+
+def extract_voice_name(voice: dict) -> str:
+    for key in ("name", "display_name", "label", "title"):
+        value = voice.get(key)
+        if value:
+            return str(value)
+    voice_id = extract_voice_id(voice)
+    return voice_id or "Без названия"
 
 
 def format_user_row(row: dict) -> str:

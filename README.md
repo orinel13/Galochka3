@@ -66,6 +66,18 @@ sudo journalctl -u galochka-hedra-bot -f
 /admin_set_default_voice voice_id
 ```
 
+`voice_id` должен быть настоящим UUID из Hedra, а не названием голоса на сайте. Чтобы посмотреть реальные ID:
+
+```text
+/admin_hedra_voices
+```
+
+Чтобы импортировать доступные голоса автоматически:
+
+```text
+/admin_voices_sync
+```
+
 ## Voice clone
 ```text
 /admin_clone_voice
@@ -113,4 +125,4 @@ scripts/restore_db.sh ./data/backups/galochka_YYYYMMDDHHMMSS.db
 ## Основные команды
 User: `/start`, `/voices`, `/setvoice`, `/balance`, `/help`.
 
-Admin: `/admin`, `/admin_users`, `/admin_allow`, `/admin_deny`, `/admin_revoke`, `/admin_voices`, `/admin_add_voice`, `/admin_clone_voice`, `/admin_models_sync`, `/admin_models`, `/admin_set_video_model`, `/admin_balance`, `/admin_jobs`, `/admin_job`, `/admin_cancel_job`, `/admin_cleanup`, `/admin_export_db`, `/admin_hedra_test`.
+Admin: `/admin`, `/admin_users`, `/admin_allow`, `/admin_deny`, `/admin_revoke`, `/admin_voices`, `/admin_hedra_voices`, `/admin_voices_sync`, `/admin_add_voice`, `/admin_clone_voice`, `/admin_models_sync`, `/admin_models`, `/admin_set_video_model`, `/admin_balance`, `/admin_jobs`, `/admin_job`, `/admin_cancel_job`, `/admin_cleanup`, `/admin_export_db`, `/admin_hedra_test`.
