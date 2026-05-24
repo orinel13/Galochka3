@@ -44,30 +44,34 @@ def audio_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def video_menu() -> ReplyKeyboardMarkup:
+def video_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text=TEXT_PHOTO_TO_VIDEO)],
+        [KeyboardButton(text=AUDIO_PHOTO_TO_VIDEO)],
+        [KeyboardButton(text=GENERATED_AUDIO_TO_VIDEO)],
+        [KeyboardButton(text=IMAGE_TO_VIDEO)],
+        [KeyboardButton(text="Prompt для видео")],
+        [KeyboardButton(text=BACK)],
+    ]
+    if is_admin:
+        keyboard.insert(4, [KeyboardButton(text="Выбрать video model"), KeyboardButton(text="Выбрать avatar model")])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=TEXT_PHOTO_TO_VIDEO)],
-            [KeyboardButton(text=AUDIO_PHOTO_TO_VIDEO)],
-            [KeyboardButton(text=GENERATED_AUDIO_TO_VIDEO)],
-            [KeyboardButton(text=IMAGE_TO_VIDEO)],
-            [KeyboardButton(text="Выбрать video model"), KeyboardButton(text="Выбрать avatar model")],
-            [KeyboardButton(text="Prompt для видео")],
-            [KeyboardButton(text=BACK)],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
 
-def image_menu() -> ReplyKeyboardMarkup:
+def image_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text=TEXT_TO_IMAGE)],
+        [KeyboardButton(text=IMAGE_EDIT)],
+        [KeyboardButton(text="Prompt для изображения")],
+        [KeyboardButton(text=BACK)],
+    ]
+    if is_admin:
+        keyboard.insert(2, [KeyboardButton(text="Выбрать image model")])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=TEXT_TO_IMAGE)],
-            [KeyboardButton(text=IMAGE_EDIT)],
-            [KeyboardButton(text="Выбрать image model")],
-            [KeyboardButton(text="Prompt для изображения")],
-            [KeyboardButton(text=BACK)],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
@@ -129,7 +133,12 @@ def choose_voice_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def scenario_keyboard(scenario: str, include_voice: bool = False, include_model: bool = True, include_prompt: bool = True) -> InlineKeyboardMarkup:
+def scenario_keyboard(
+    scenario: str,
+    include_voice: bool = False,
+    include_model: bool = True,
+    include_prompt: bool = True,
+) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Продолжить", callback_data=f"scenario_continue:{scenario}")]]
     extra: list[InlineKeyboardButton] = []
     if include_voice:

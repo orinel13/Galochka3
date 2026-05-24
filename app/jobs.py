@@ -19,6 +19,7 @@ from app.services.model_service import ModelService, supports_image_edit
 from app.services.tts_service import TtsService
 from app.services.video_service import VideoService
 from app.services.voice_clone_service import extract_id
+from app.ui_messages import send_tracked_message
 from app.utils import iso_after_hours, now_iso, short_error
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,7 @@ class JobManager:
     async def _process_tts(self, job: dict[str, Any]) -> None:
         job_id = job["id"]
         try:
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             generation = await self.tts.generate(job["voice_id"], job["text"])
             generation_id = extract_id(generation)
             if not generation_id:
@@ -223,7 +224,7 @@ class JobManager:
         try:
             await self._ensure_video_can_start()
             model_id = job.get("selected_model_id") or await self._video_model_or_fail()
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"telegram_image_{job_id}{image_path.suffix}")
@@ -240,7 +241,7 @@ class JobManager:
         try:
             await self._ensure_video_can_start()
             model_id = job.get("selected_model_id") or await self._video_model_or_fail()
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
             audio_path = await self.files.download_audio_file_id(job["audio_file_id"], job_id)
@@ -262,7 +263,7 @@ class JobManager:
             source = await self.db.fetchone("SELECT * FROM jobs WHERE id=?", (job["source_audio_job_id"],))
             if not source or source["status"] != JobStatus.COMPLETE.value:
                 raise RuntimeError("Исходная аудио-задача недоступна.")
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["source_image_file_id"], job_id)
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"telegram_image_{job_id}{image_path.suffix}")
@@ -290,7 +291,7 @@ class JobManager:
             model = await self.db.fetchone("SELECT * FROM hedra_models WHERE id=?", (model_id,))
             if model and model["requires_audio_input"]:
                 raise RuntimeError("Эта модель требует аудио. Выбери другую video model для Фото → видео.")
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"image_to_video_{job_id}{image_path.suffix}")
@@ -331,7 +332,7 @@ class JobManager:
             prompt = job.get("text_prompt")
             if not prompt:
                 raise RuntimeError("Prompt для изображения пустой.")
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             generation = await self.hedra.generate_image(
                 text_prompt=prompt,
                 model_id=model_id,
@@ -357,7 +358,7 @@ class JobManager:
             prompt = job.get("text_prompt")
             if not prompt:
                 raise RuntimeError("Prompt редактирования пустой.")
-            await self.bot.send_message(job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
+            await send_tracked_message(self.bot, job["telegram_id"], f"Задача #{job_id} отправлена в Hedra.")
             await self._update_job(job_id, status=JobStatus.UPLOADING_ASSETS.value)
             image_path = await self.files.download_image_file_id(job["image_file_id"], job_id)
             image_asset_id = await self._upload_asset(job_id, image_path, "image", f"image_edit_{job_id}{image_path.suffix}")
@@ -445,7 +446,7 @@ class JobManager:
                 last_notice = now
                 progress = last.get("progress")
                 suffix = f" Прогресс: {progress}%." if progress is not None else ""
-                await self.bot.send_message(telegram_id, f"Задача #{job_id} обрабатывается.{suffix}")
+                await send_tracked_message(self.bot, telegram_id, f"Задача #{job_id} обрабатывается.{suffix}")
             await asyncio.sleep(self.settings.job_poll_interval_sec)
         raise TimeoutError("Генерация не успела завершиться за лимит времени.")
 
@@ -504,16 +505,16 @@ class JobManager:
     async def _timeout(self, job_id: int, telegram_id: int) -> None:
         message = "Генерация не успела завершиться за лимит времени."
         await self._update_job(job_id, status=JobStatus.TIMEOUT.value, error_message=message, completed_at=now_iso())
-        await self.bot.send_message(telegram_id, f"Задача #{job_id}: {message}")
+        await send_tracked_message(self.bot, telegram_id, f"Задача #{job_id}: {message}")
 
     async def _fail(self, job_id: int, message: str, telegram_id: int | None = None) -> None:
         await self._update_job(job_id, status=JobStatus.ERROR.value, error_message=short_error(message), completed_at=now_iso())
         row = await self.db.fetchone("SELECT telegram_id FROM jobs WHERE id=?", (job_id,))
         target = telegram_id or (row["telegram_id"] if row else None)
         if target:
-            await self.bot.send_message(target, f"Задача #{job_id} завершилась ошибкой: {short_error(message)}")
+            await send_tracked_message(self.bot, target, f"Задача #{job_id} завершилась ошибкой: {short_error(message)}")
         if "Не найдена Hedra video model" in message and target != self.settings.admin_telegram_id:
-            await self.bot.send_message(self.settings.admin_telegram_id, f"Задача #{job_id}: {short_error(message)}")
+            await send_tracked_message(self.bot, self.settings.admin_telegram_id, f"Задача #{job_id}: {short_error(message)}")
 
     async def _update_job(self, job_id: int, **fields: Any) -> None:
         fields["updated_at"] = now_iso()
